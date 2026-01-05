@@ -1,0 +1,10 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # This is your single server, running main.py
+  my-fastmcp-server:
+    build: .  # Builds the Dockerfile in this directory
+    ports:
+      # Exposes your server's port 8000 to your host machine's port 8000
+      - "8000:8000"

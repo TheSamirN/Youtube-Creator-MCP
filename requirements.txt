@@ -1,0 +1,21 @@
+# Core MCP dependencies
+fastmcp
+mcp[cli]==1.8.0
+
+# YouTube/Video handling
+youtube-transcript-api
+yt-dlp
+moviepy
+
+# Whisper transcription (optional - for transcribe_with_word_timestamps)
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
+whisper-timestamped
+silero-vad
+onnxruntime
+
+# Web UI
+fastapi
+uvicorn[standard]
+google-genai
+python-dotenv

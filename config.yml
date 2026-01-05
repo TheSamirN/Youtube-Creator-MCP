@@ -1,0 +1,16 @@
+# config.yml
+agents:
+  - name: "claude-desktop-agent"
+    id: "agent-claude-12345"
+    # This is the API key your agent (Claude) will use to connect to the gateway
+    api_key: "your-secret-api-key-for-claude"
+
+tools:
+  - name: "my_main_py_tools"
+    # This URL must match the service name and port from docker-compose.yml
+    # 'http://my-tool-server:8001'
+    url: "http://my-tool-server:8001"
+    
+    # Your @mcp.tool functions will be auto-registered here
+    # by your server when it starts up. You can leave this empty.
+    functions: []

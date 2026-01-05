@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Creator Studio</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar - Tools Panel -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>🛠️ Tools</h2>
+            </div>
+            <div class="tools-list" id="tools-list">
+                <!-- Tools will be populated by JS -->
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="app-header">
+                <h1>🎬 YouTube Creator Studio</h1>
+                <p class="subtitle">Powered by Gemini AI</p>
+            </header>
+
+            <!-- Two-column layout: Chat | Transcript+Video -->
+            <div class="content-grid">
+                <!-- Chat Panel -->
+                <section class="chat-panel">
+                    <div class="panel-header">
+                        <h3>💬 Chat</h3>
+                    </div>
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="message assistant">
+                            <div class="message-content">
+                                <p>Hello! I'm your YouTube Creator assistant. I can help you:</p>
+                                <ul>
+                                    <li>📝 Get transcripts from YouTube videos</li>
+                                    <li>✂️ Download specific clips with timestamps</li>
+                                    <li>🎬 Stitch clips together into new videos</li>
+                                    <li>🎙️ Transcribe audio with Whisper</li>
+                                </ul>
+                                <p>Paste some YouTube URLs and tell me what kind of video you want to create!</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-input-container">
+                        <textarea id="chat-input"
+                            placeholder="Describe what you want to create, or paste YouTube URLs..."
+                            rows="3"></textarea>
+                        <button id="send-btn" class="btn-primary">
+                            <span>Send</span>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                            </svg>
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Right Panel - Transcript + Video (stacked) -->
+                <section class="right-panel">
+                    <!-- Transcript Section -->
+                    <div class="transcript-section">
+                        <div class="panel-header">
+                            <h3>📄 Transcripts</h3>
+                            <div class="transcript-controls">
+                                <select id="transcript-selector" class="transcript-dropdown">
+                                    <option value="">-- Select a video --</option>
+                                </select>
+                                <button class="btn-icon btn-danger" id="delete-transcript-btn"
+                                    title="Delete selected transcript">🗑️</button>
+                                <button class="btn-icon btn-danger" id="clear-all-btn" title="Clear all transcripts">🗑️
+                                    All</button>
+                            </div>
+                        </div>
+                        <div class="transcript-container" id="transcript-container">
+                            <div class="empty-state">
+                                <p>No transcripts loaded yet.</p>
+                                <p class="hint">Ask me to get transcripts from YouTube videos!</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Video Preview Section (below transcript) -->
+                    <div class="video-section">
+                        <div class="panel-header">
+                            <h3>▶️ Video Preview</h3>
+                            <button class="btn-secondary btn-small" id="refresh-videos-btn">🔄 Refresh</button>
+                        </div>
+                        <div class="preview-container" id="preview-container">
+                            <div class="empty-state">
+                                <p>Click a transcript timestamp to preview</p>
+                            </div>
+                        </div>
+                        <!-- Downloaded Videos List -->
+                        <div class="downloads-list" id="downloads-list">
+                            <!-- Downloaded videos will appear here -->
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Tool Modal -->
+    <div class="modal-overlay" id="tool-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">Tool Name</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="tool-form">
+                    <div id="tool-params">
+                        <!-- Parameters will be populated by JS -->
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn-secondary" id="modal-cancel">Cancel</button>
+                        <button type="submit" class="btn-primary">Execute</button>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-result" id="modal-result" style="display: none;">
+                <h4>Result:</h4>
+                <pre id="tool-result-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

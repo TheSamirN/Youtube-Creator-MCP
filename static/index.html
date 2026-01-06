@@ -37,6 +37,9 @@
                 <section class="chat-panel">
                     <div class="panel-header">
                         <h3>💬 Chat</h3>
+                        <button class="btn-export" id="export-logs-btn" title="Export chat & tool logs to HTML">
+                            📄 Export Logs
+                        </button>
                     </div>
                     <div class="chat-messages" id="chat-messages">
                         <div class="message assistant">
@@ -72,15 +75,26 @@
                     <div class="transcript-section">
                         <div class="panel-header">
                             <h3>📄 Transcripts</h3>
-                            <div class="transcript-controls">
-                                <select id="transcript-selector" class="transcript-dropdown">
-                                    <option value="">-- Select a video --</option>
-                                </select>
-                                <button class="btn-icon btn-danger" id="delete-transcript-btn"
-                                    title="Delete selected transcript">🗑️</button>
-                                <button class="btn-icon btn-danger" id="clear-all-btn" title="Clear all transcripts">🗑️
-                                    All</button>
+                            <div class="transcript-tabs">
+                                <button class="tab-btn active" data-tab="fetched" id="tab-fetched">📝 Fetched</button>
+                                <button class="tab-btn" data-tab="generated" id="tab-generated">🎬 Generated</button>
                             </div>
+                        </div>
+                        <div class="transcript-controls">
+                            <select id="transcript-selector" class="transcript-dropdown">
+                                <option value="">-- Select a video --</option>
+                            </select>
+                            <button class="btn-icon btn-danger" id="delete-transcript-btn"
+                                title="Delete selected transcript">🗑️</button>
+                            <button class="btn-icon btn-danger" id="clear-all-btn" title="Clear all transcripts">🗑️
+                                All</button>
+                        </div>
+                        <div class="transcript-playback-controls">
+                            <button class="btn-play" id="play-transcript-btn" title="Play through all segments">▶️ Play
+                                All</button>
+                            <button class="btn-stop" id="stop-transcript-btn" title="Stop playback" disabled>⏹️
+                                Stop</button>
+                            <span id="playback-status" class="playback-status">Ready</span>
                         </div>
                         <div class="transcript-container" id="transcript-container">
                             <div class="empty-state">

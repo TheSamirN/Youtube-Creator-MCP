@@ -9,10 +9,19 @@
 
 const state = {
     conversationHistory: [],
-    transcripts: {},  // Store multiple transcripts by video_id
+    transcripts: {},  // Store fetched YouTube transcripts by video_id
+    generatedTranscripts: {},  // Store AI-generated transcripts by script_id
     currentVideoId: null,
     tools: [],
-    isLoading: false
+    isLoading: false,
+    activeTab: 'fetched',  // 'fetched' or 'generated'
+    // Playback state
+    isPlaying: false,
+    playbackSegmentIndex: 0,
+    playbackTimer: null,
+    currentSegments: [],
+    // Log tracking for export
+    chatLogs: []
 };
 
 // ============================================================================
@@ -38,7 +47,16 @@ const elements = {
     modalResult: document.getElementById('modal-result'),
     toolResultContent: document.getElementById('tool-result-content'),
     deleteTranscriptBtn: document.getElementById('delete-transcript-btn'),
-    clearAllBtn: document.getElementById('clear-all-btn')
+    clearAllBtn: document.getElementById('clear-all-btn'),
+    // Tab elements
+    tabFetched: document.getElementById('tab-fetched'),
+    tabGenerated: document.getElementById('tab-generated'),
+    // Playback elements
+    playTranscriptBtn: document.getElementById('play-transcript-btn'),
+    stopTranscriptBtn: document.getElementById('stop-transcript-btn'),
+    playbackStatus: document.getElementById('playback-status'),
+    // Export elements
+    exportLogsBtn: document.getElementById('export-logs-btn')
 };
 
 // ============================================================================
@@ -49,6 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTools();
     loadVideos();
     loadCachedTranscripts();
+    loadGeneratedTranscripts();
     setupEventListeners();
 });
 
@@ -62,10 +81,11 @@ function setupEventListeners() {
         }
     });
 
-    // Transcript selector
+    // Transcript selector - select from active tab's data
     elements.transcriptSelector.addEventListener('change', (e) => {
         if (e.target.value) {
-            displayTranscript(state.transcripts[e.target.value]);
+            const source = state.activeTab === 'fetched' ? state.transcripts : state.generatedTranscripts;
+            displayTranscript(source[e.target.value]);
         }
     });
 
@@ -83,6 +103,17 @@ function setupEventListeners() {
     // Cache management
     elements.deleteTranscriptBtn.addEventListener('click', deleteSelectedTranscript);
     elements.clearAllBtn.addEventListener('click', clearAllTranscripts);
+
+    // Tab switching
+    elements.tabFetched.addEventListener('click', () => switchTab('fetched'));
+    elements.tabGenerated.addEventListener('click', () => switchTab('generated'));
+
+    // Playback controls
+    elements.playTranscriptBtn.addEventListener('click', startPlayback);
+    elements.stopTranscriptBtn.addEventListener('click', stopPlayback);
+
+    // Log export
+    elements.exportLogsBtn.addEventListener('click', exportLogsToHtml);
 }
 
 // ============================================================================
@@ -93,16 +124,26 @@ async function sendMessage() {
     const message = elements.chatInput.value.trim();
     if (!message || state.isLoading) return;
 
-    // Add user message to UI
+    const timestamp = new Date().toISOString();
+
+    // Add user message to UI and logs
     addMessageToChat('user', message);
     elements.chatInput.value = '';
+    state.chatLogs.push({ timestamp, role: 'user', content: message });
 
     // Add to history
     state.conversationHistory.push({ role: 'user', content: message });
 
-    // Show loading state
+    // Show loading state with pending indicator
     setLoading(true);
-    const loadingMsg = addMessageToChat('assistant', '<span class="loading">Thinking</span>');
+    const loadingMsg = addMessageToChat('assistant', `
+        <div class="tool-call pending">
+            <div class="tool-call-header">
+                <span class="tool-icon">⏳</span>
+                Processing request...
+            </div>
+        </div>
+    `);
 
     try {
         const response = await fetch('/api/chat', {
@@ -122,6 +163,7 @@ async function sendMessage() {
         // Process response
         if (data.error) {
             addMessageToChat('assistant', `❌ Error: ${data.error}`);
+            state.chatLogs.push({ timestamp: new Date().toISOString(), role: 'error', content: data.error });
         } else {
             // Build response HTML
             let html = '';
@@ -133,6 +175,17 @@ async function sendMessage() {
                     const tr = data.tool_results?.[i];
                     const status = tr?.success ? 'success' : 'error';
                     const resultStr = tr ? JSON.stringify(tr.result || tr.error, null, 2) : 'pending';
+
+                    // Log tool call
+                    state.chatLogs.push({
+                        timestamp: new Date().toISOString(),
+                        role: 'tool_call',
+                        tool_name: tc.name,
+                        args: tc.args,
+                        result: tr,
+                        status: status
+                    });
+
                     html += `
                         <div class="tool-call ${status}">
                             <div class="tool-call-header" onclick="this.nextElementSibling.classList.toggle('expanded')">
@@ -161,6 +214,11 @@ async function sendMessage() {
             // Add text response
             if (data.response) {
                 html += formatMarkdown(data.response);
+                state.chatLogs.push({
+                    timestamp: new Date().toISOString(),
+                    role: 'assistant',
+                    content: data.response
+                });
             }
 
             addMessageToChat('assistant', html);
@@ -184,6 +242,7 @@ async function sendMessage() {
 
             // Load any new cached transcripts
             loadCachedTranscripts();
+            loadGeneratedTranscripts();
         }
     } catch (error) {
         loadingMsg.remove();
@@ -193,13 +252,38 @@ async function sendMessage() {
     setLoading(false);
 }
 
-function addMessageToChat(role, content) {
+function addMessageToChat(role, content, rawContent = null) {
     const msg = document.createElement('div');
     msg.className = `message ${role}`;
-    msg.innerHTML = `<div class="message-content">${content}</div>`;
+    // Store raw content for copying (strip HTML for clean copy)
+    const textToCopy = rawContent || content.replace(/<[^>]*>/g, '');
+    msg.innerHTML = `
+        <div class="message-content">${content}</div>
+        <div class="message-actions">
+            <button class="copy-btn" onclick="copyToClipboard(this)" data-copy-text="${escapeHtml(textToCopy)}" title="Copy to clipboard">📋</button>
+        </div>
+    `;
     elements.chatMessages.appendChild(msg);
     elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
     return msg;
+}
+
+async function copyToClipboard(btn) {
+    const text = btn.dataset.copyText;
+    try {
+        await navigator.clipboard.writeText(text);
+        const originalText = btn.textContent;
+        btn.textContent = '✅';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.remove('copied');
+        }, 2000);
+    } catch (err) {
+        console.error('Copy failed:', err);
+        btn.textContent = '❌';
+        setTimeout(() => btn.textContent = '📋', 2000);
+    }
 }
 
 function setLoading(loading) {
@@ -219,24 +303,72 @@ async function loadCachedTranscripts() {
         if (data.transcripts) {
             // Merge with existing transcripts
             Object.assign(state.transcripts, data.transcripts);
-            updateTranscriptSelector();
+            if (state.activeTab === 'fetched') {
+                updateTranscriptSelector();
+            }
         }
     } catch (error) {
         console.error('Failed to load cached transcripts:', error);
     }
 }
 
+async function loadGeneratedTranscripts() {
+    try {
+        const response = await fetch('/api/generated-transcripts');
+        const data = await response.json();
+
+        if (data.transcripts) {
+            // Merge with existing generated transcripts
+            Object.assign(state.generatedTranscripts, data.transcripts);
+            if (state.activeTab === 'generated') {
+                updateTranscriptSelector();
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load generated transcripts:', error);
+    }
+}
+
+function switchTab(tab) {
+    state.activeTab = tab;
+
+    // Update tab button styles
+    elements.tabFetched.classList.toggle('active', tab === 'fetched');
+    elements.tabGenerated.classList.toggle('active', tab === 'generated');
+
+    // Stop any current playback
+    stopPlayback();
+
+    // Update selector for the new tab
+    updateTranscriptSelector();
+
+    // Clear current display
+    elements.transcriptContainer.innerHTML = `
+        <div class="empty-state">
+            <p>Select a ${tab === 'fetched' ? 'transcript' : 'generated script'} from the dropdown above.</p>
+        </div>
+    `;
+}
+
 function updateTranscriptSelector() {
     const selector = elements.transcriptSelector;
     const currentValue = selector.value;
+
+    // Determine which data source to use based on active tab
+    const source = state.activeTab === 'fetched' ? state.transcripts : state.generatedTranscripts;
 
     // Clear existing options except the first one
     while (selector.options.length > 1) {
         selector.remove(1);
     }
 
+    // Update placeholder text
+    selector.options[0].textContent = state.activeTab === 'fetched'
+        ? '-- Select a video --'
+        : '-- Select a script --';
+
     // Add options for each transcript
-    for (const [videoId, transcript] of Object.entries(state.transcripts)) {
+    for (const [videoId, transcript] of Object.entries(source)) {
         const option = document.createElement('option');
         option.value = videoId;
         // Show title and channel if available, otherwise fallback to video ID
@@ -249,12 +381,12 @@ function updateTranscriptSelector() {
     }
 
     // Restore selection or select the latest
-    if (currentValue && state.transcripts[currentValue]) {
+    if (currentValue && source[currentValue]) {
         selector.value = currentValue;
-    } else if (Object.keys(state.transcripts).length > 0) {
-        const lastKey = Object.keys(state.transcripts).pop();
+    } else if (Object.keys(source).length > 0) {
+        const lastKey = Object.keys(source).pop();
         selector.value = lastKey;
-        displayTranscript(state.transcripts[lastKey]);
+        displayTranscript(source[lastKey]);
     }
 }
 
@@ -267,12 +399,20 @@ async function displayTranscript(transcriptData) {
 
     if (!segments && videoId) {
         try {
-            const response = await fetch(`/api/transcripts/${videoId}`);
+            // Use correct API endpoint based on active tab
+            const endpoint = state.activeTab === 'generated'
+                ? `/api/generated-transcripts/${videoId}`
+                : `/api/transcripts/${videoId}`;
+            const response = await fetch(endpoint);
             if (response.ok) {
                 const fullData = await response.json();
                 segments = fullData.segments;
                 // Update local cache
-                state.transcripts[videoId] = fullData;
+                if (state.activeTab === 'generated') {
+                    state.generatedTranscripts[videoId] = fullData;
+                } else {
+                    state.transcripts[videoId] = fullData;
+                }
             }
         } catch (e) {
             console.error('Failed to load full transcript:', e);
@@ -280,6 +420,8 @@ async function displayTranscript(transcriptData) {
     }
 
     state.currentVideoId = videoId;
+    // Store segments for playback
+    state.currentSegments = segments || [];
 
     // Get title and channel if available
     const title = transcriptData.title || `Video ${videoId}`;
@@ -299,7 +441,8 @@ async function displayTranscript(transcriptData) {
 
     if (segments && segments.length > 0) {
         html += '<div class="transcript-segments">';
-        for (const seg of segments) {
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
             // Support mixed-source transcripts (scripts)
             const targetVideoId = seg.video_id || videoId;
             const sourceLabel = seg.video_id ? `<span class="segment-source" title="Source Video">${seg.video_id}</span>` : '';
@@ -307,8 +450,10 @@ async function displayTranscript(transcriptData) {
             html += `
                 <div class="transcript-segment" 
                      onclick="openYouTubeAtTime('${targetVideoId}', ${seg.start})"
+                     data-index="${i}"
                      data-start="${seg.start}" 
-                     data-end="${seg.end}">
+                     data-end="${seg.end}"
+                     data-video-id="${targetVideoId}">
                     <div class="segment-header">
                         <span class="segment-time">${formatTime(seg.start)}</span>
                         ${sourceLabel}
@@ -324,11 +469,94 @@ async function displayTranscript(transcriptData) {
     }
 
     elements.transcriptContainer.innerHTML = html;
+
+    // Enable playback button if we have segments
+    elements.playTranscriptBtn.disabled = !segments || segments.length === 0;
 }
 
 function openYouTubeAtTime(videoId, startTime) {
     const startSeconds = Math.floor(startTime);
     showYouTubeEmbed(videoId, startSeconds);
+}
+
+// ============================================================================
+// Playback Functions
+// ============================================================================
+
+function startPlayback() {
+    if (state.currentSegments.length === 0) {
+        elements.playbackStatus.textContent = 'No segments to play';
+        return;
+    }
+
+    state.isPlaying = true;
+    state.playbackSegmentIndex = 0;
+
+    // Update UI
+    elements.playTranscriptBtn.disabled = true;
+    elements.stopTranscriptBtn.disabled = false;
+
+    // Start playing first segment
+    playSegment(0);
+}
+
+function stopPlayback() {
+    state.isPlaying = false;
+
+    // Clear any pending timer
+    if (state.playbackTimer) {
+        clearTimeout(state.playbackTimer);
+        state.playbackTimer = null;
+    }
+
+    // Update UI
+    elements.playTranscriptBtn.disabled = state.currentSegments.length === 0;
+    elements.stopTranscriptBtn.disabled = true;
+    elements.playbackStatus.textContent = 'Ready';
+
+    // Remove playing highlight from all segments
+    document.querySelectorAll('.transcript-segment.playing').forEach(el => {
+        el.classList.remove('playing');
+    });
+}
+
+function playSegment(index) {
+    if (!state.isPlaying || index >= state.currentSegments.length) {
+        // Finished playing all segments
+        stopPlayback();
+        elements.playbackStatus.textContent = 'Finished';
+        return;
+    }
+
+    const segment = state.currentSegments[index];
+    const videoId = segment.video_id || state.currentVideoId;
+    const startTime = segment.start;
+    const endTime = segment.end;
+    const duration = endTime - startTime;
+
+    state.playbackSegmentIndex = index;
+
+    // Update status
+    elements.playbackStatus.textContent = `Playing ${index + 1}/${state.currentSegments.length}`;
+
+    // Highlight current segment
+    document.querySelectorAll('.transcript-segment.playing').forEach(el => {
+        el.classList.remove('playing');
+    });
+    const currentSegmentEl = document.querySelector(`.transcript-segment[data-index="${index}"]`);
+    if (currentSegmentEl) {
+        currentSegmentEl.classList.add('playing');
+        currentSegmentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Load YouTube embed with start and end time
+    showYouTubeEmbed(videoId, Math.floor(startTime), Math.ceil(endTime));
+
+    // Schedule next segment after this one's duration
+    // Add a small buffer (0.5s) to account for loading time
+    state.playbackTimer = setTimeout(() => {
+        playSegment(index + 1);
+    }, (duration + 0.5) * 1000);
 }
 
 // ============================================================================
@@ -465,12 +693,32 @@ async function loadTools() {
 }
 
 function renderToolsList() {
-    elements.toolsList.innerHTML = state.tools.map(tool => `
-        <div class="tool-item" onclick="openToolModal('${tool.name}')">
-            <h4>${formatToolName(tool.name)}</h4>
-            <p>${tool.description.substring(0, 80)}...</p>
-        </div>
-    `).join('');
+    elements.toolsList.innerHTML = state.tools.map(tool => {
+        // Get first sentence or first 60 chars for concise summary
+        const summary = getToolSummary(tool.description);
+        return `
+            <div class="tool-item" onclick="openToolModal('${tool.name}')">
+                <h4>${formatToolName(tool.name)}</h4>
+                <p>${summary}</p>
+            </div>
+        `;
+    }).join('');
+}
+
+function getToolSummary(description) {
+    // Get first sentence (up to first period followed by space or end)
+    const firstSentence = description.match(/^[^.]+\.?/);
+    if (firstSentence && firstSentence[0].length <= 80) {
+        return firstSentence[0];
+    }
+    // Fallback to first 60 chars without cutting words
+    const words = description.split(' ');
+    let summary = '';
+    for (const word of words) {
+        if ((summary + ' ' + word).length > 60) break;
+        summary += (summary ? ' ' : '') + word;
+    }
+    return summary + '...';
 }
 
 function formatToolName(name) {
@@ -485,11 +733,18 @@ function openToolModal(toolName) {
     elements.toolForm.dataset.toolName = toolName;
     elements.modalResult.style.display = 'none';
 
-    // Build form fields
+    // Build form fields with full description at top
     const props = tool.parameters?.properties || {};
     const required = tool.parameters?.required || [];
 
-    elements.toolParams.innerHTML = Object.entries(props).map(([name, prop]) => {
+    // Add full tool description at top of modal form
+    let formHtml = `
+        <div class="tool-description">
+            <p>${escapeHtml(tool.description)}</p>
+        </div>
+    `;
+
+    formHtml += Object.entries(props).map(([name, prop]) => {
         const isRequired = required.includes(name);
         const type = prop.type === 'array' ? 'textarea' : 'text';
         return `
@@ -503,6 +758,8 @@ function openToolModal(toolName) {
             </div>
         `;
     }).join('');
+
+    elements.toolParams.innerHTML = formHtml;
 
     elements.modal.classList.add('active');
 }
@@ -582,60 +839,80 @@ async function deleteSelectedTranscript() {
         return;
     }
 
-    if (!confirm(`Delete transcript for "${state.transcripts[videoId]?.title || videoId}"?`)) {
+    const source = state.activeTab === 'fetched' ? state.transcripts : state.generatedTranscripts;
+    const itemLabel = state.activeTab === 'fetched' ? 'transcript' : 'generated transcript';
+
+    if (!confirm(`Delete ${itemLabel} "${source[videoId]?.title || videoId}"?`)) {
         return;
     }
 
     try {
-        const response = await fetch(`/api/transcripts/${videoId}`, { method: 'DELETE' });
+        const endpoint = state.activeTab === 'generated'
+            ? `/api/generated-transcripts/${videoId}`
+            : `/api/transcripts/${videoId}`;
+        const response = await fetch(endpoint, { method: 'DELETE' });
         const data = await response.json();
 
         if (data.success) {
-            delete state.transcripts[videoId];
+            if (state.activeTab === 'generated') {
+                delete state.generatedTranscripts[videoId];
+            } else {
+                delete state.transcripts[videoId];
+            }
             updateTranscriptSelector();
             elements.transcriptContainer.innerHTML = `
                 <div class="empty-state">
-                    <p>Transcript deleted.</p>
-                    <p class="hint">Select another transcript or fetch new ones.</p>
+                    <p>${itemLabel.charAt(0).toUpperCase() + itemLabel.slice(1)} deleted.</p>
+                    <p class="hint">Select another ${itemLabel} or create new ones.</p>
                 </div>
             `;
         } else {
             alert('Failed to delete: ' + (data.detail || data.message));
         }
     } catch (error) {
-        alert('Error deleting transcript: ' + error.message);
+        alert('Error deleting: ' + error.message);
     }
 }
 
 async function clearAllTranscripts() {
-    const count = Object.keys(state.transcripts).length;
+    const source = state.activeTab === 'fetched' ? state.transcripts : state.generatedTranscripts;
+    const count = Object.keys(source).length;
+    const itemLabel = state.activeTab === 'fetched' ? 'transcripts' : 'generated transcripts';
+
     if (count === 0) {
-        alert('No transcripts to clear');
+        alert(`No ${itemLabel} to clear`);
         return;
     }
 
-    if (!confirm(`Delete ALL ${count} cached transcripts? This cannot be undone.`)) {
+    if (!confirm(`Delete ALL ${count} ${itemLabel}? This cannot be undone.`)) {
         return;
     }
 
     try {
-        const response = await fetch('/api/transcripts', { method: 'DELETE' });
+        const endpoint = state.activeTab === 'generated'
+            ? '/api/generated-transcripts'
+            : '/api/transcripts';
+        const response = await fetch(endpoint, { method: 'DELETE' });
         const data = await response.json();
 
         if (data.success) {
-            state.transcripts = {};
+            if (state.activeTab === 'generated') {
+                state.generatedTranscripts = {};
+            } else {
+                state.transcripts = {};
+            }
             updateTranscriptSelector();
             elements.transcriptContainer.innerHTML = `
                 <div class="empty-state">
-                    <p>All transcripts cleared.</p>
-                    <p class="hint">Fetch new transcripts to get started.</p>
+                    <p>All ${itemLabel} cleared.</p>
+                    <p class="hint">Fetch new transcripts or create scripts to get started.</p>
                 </div>
             `;
         } else {
             alert('Failed to clear: ' + (data.detail || data.message));
         }
     } catch (error) {
-        alert('Error clearing transcripts: ' + error.message);
+        alert('Error clearing: ' + error.message);
     }
 }
 
@@ -670,7 +947,318 @@ function formatMarkdown(text) {
         .replace(/\n/g, '<br>');
 }
 
+// ============================================================================
+// Log Export Functions
+// ============================================================================
+
+function exportLogsToHtml() {
+    if (state.chatLogs.length === 0) {
+        alert('No logs to export yet. Start a conversation first!');
+        return;
+    }
+
+    const timestamp = new Date().toLocaleString();
+    const filename = `youtube-creator-logs-${new Date().toISOString().slice(0, 10)}.html`;
+
+    // Build modern HTML page
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Creator Studio - Chat Logs</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-tertiary: #252542;
+            --accent: #6366f1;
+            --accent-light: #8b5cf6;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            padding: 2rem;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 100%);
+            border-radius: 16px;
+            margin-bottom: 2rem;
+        }
+        
+        header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        header p {
+            opacity: 0.9;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        
+        .stat-card .label {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        
+        .log-entry {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .log-entry.user {
+            border-left: 4px solid var(--accent);
+        }
+        
+        .log-entry.assistant {
+            border-left: 4px solid var(--success);
+        }
+        
+        .log-entry.tool_call {
+            border-left: 4px solid var(--warning);
+        }
+        
+        .log-entry.error {
+            border-left: 4px solid var(--error);
+        }
+        
+        .log-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .log-role {
+            background: var(--bg-tertiary);
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .log-time {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+        
+        .log-content {
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .tool-info {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        
+        .tool-info h4 {
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+        
+        pre {
+            background: var(--bg-primary);
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+        }
+        
+        code {
+            background: var(--bg-tertiary);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.875rem;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .status-badge.success { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+        .status-badge.error { background: rgba(239, 68, 68, 0.2); color: var(--error); }
+        
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎬 YouTube Creator Studio</h1>
+            <p>Chat & Tool Logs Export</p>
+            <p>Generated: ${timestamp}</p>
+        </header>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="value">${state.chatLogs.filter(l => l.role === 'user').length}</div>
+                <div class="label">User Messages</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">${state.chatLogs.filter(l => l.role === 'assistant').length}</div>
+                <div class="label">AI Responses</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">${state.chatLogs.filter(l => l.role === 'tool_call').length}</div>
+                <div class="label">Tool Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">${state.chatLogs.filter(l => l.role === 'tool_call' && l.status === 'success').length}</div>
+                <div class="label">Successful Tools</div>
+            </div>
+        </div>
+        
+        <h2 style="margin-bottom: 1rem;">📜 Conversation Log</h2>
+        
+        ${state.chatLogs.map(log => renderLogEntry(log)).join('')}
+        
+        <footer>
+            <p>Exported from YouTube Creator Studio powered by Gemini AI</p>
+        </footer>
+    </div>
+</body>
+</html>`;
+
+    // Download the file
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function renderLogEntry(log) {
+    const time = new Date(log.timestamp).toLocaleTimeString();
+
+    if (log.role === 'user') {
+        return `
+            <div class="log-entry user">
+                <div class="log-header">
+                    <span class="log-role">👤 User</span>
+                    <span class="log-time">${time}</span>
+                </div>
+                <div class="log-content">${escapeHtml(log.content)}</div>
+            </div>
+        `;
+    }
+
+    if (log.role === 'assistant') {
+        return `
+            <div class="log-entry assistant">
+                <div class="log-header">
+                    <span class="log-role">🤖 Assistant</span>
+                    <span class="log-time">${time}</span>
+                </div>
+                <div class="log-content">${escapeHtml(log.content)}</div>
+            </div>
+        `;
+    }
+
+    if (log.role === 'tool_call') {
+        const statusBadge = log.status === 'success'
+            ? '<span class="status-badge success">✅ Success</span>'
+            : '<span class="status-badge error">❌ Error</span>';
+
+        return `
+            <div class="log-entry tool_call">
+                <div class="log-header">
+                    <span class="log-role">🔧 Tool Call</span>
+                    <span class="log-time">${time}</span>
+                    ${statusBadge}
+                </div>
+                <div class="tool-info">
+                    <h4>${log.tool_name}</h4>
+                    <strong>Arguments:</strong>
+                    <pre>${JSON.stringify(log.args, null, 2)}</pre>
+                    <strong>Result:</strong>
+                    <pre>${JSON.stringify(log.result, null, 2)}</pre>
+                </div>
+            </div>
+        `;
+    }
+
+    if (log.role === 'error') {
+        return `
+            <div class="log-entry error">
+                <div class="log-header">
+                    <span class="log-role">❌ Error</span>
+                    <span class="log-time">${time}</span>
+                </div>
+                <div class="log-content">${escapeHtml(log.content)}</div>
+            </div>
+        `;
+    }
+
+    return '';
+}
+
 // Make functions globally available
 window.openToolModal = openToolModal;
 window.playVideo = playVideo;
 window.openYouTubeAtTime = openYouTubeAtTime;
+window.copyToClipboard = copyToClipboard;
+

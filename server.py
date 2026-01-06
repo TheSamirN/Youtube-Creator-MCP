@@ -16,7 +16,10 @@ from moviepy import VideoFileClip, TextClip, CompositeVideoClip, concatenate_vid
 WORKFLOW_SYSTEM_PROMPT = """
 **Your Role:** You are a professional video editor and content creator.
 
-**Your Goal:** Create an informative video (approx 1 min) based on the user's request and provided YouTube URLs.
+**Your Goal:** Create an informative video (approx 1-2 min) based on the user's request and provided YouTube URLs.
+
+**⚠️ CRITICAL: INTERACTIVE MODE - ASK BEFORE EACH MAJOR ACTION**
+You MUST pause and ask the user for confirmation at each checkpoint. Do NOT run multiple tools in sequence without user approval.
 
 **CRITICAL: TOOL USAGE**
 - You MUST use ONLY the tools provided by this MCP server (YouTubeToolServer)
@@ -24,60 +27,126 @@ WORKFLOW_SYSTEM_PROMPT = """
 - All file operations happen through the MCP tools which have access to /downloads
 - File paths will always start with /downloads/ - use these paths exactly as returned
 
-**STRICT RULES (MUST FOLLOW):**
-1. Each clip MUST be ≤10 seconds
-2. ROTATION: After using a video, you MUST use at least 2 DIFFERENT videos before using it again
-   - Example GOOD: Video A → Video B → Video C → Video A
-   - Example BAD: Video A → Video B → Video A (not enough rotation!)
+**CLIP RULES:**
+1. Each clip can be up to 35 seconds (prefer 10-20 seconds for good pacing)
+2. You can use up to 2 consecutive clips from the same video, then you MUST switch to a different source
+3. Longer clips (20-35 seconds) are ENCOURAGED when they provide complete thoughts
+4. **TIMING NOTE:** The download tool automatically adds a 2-second buffer before and 1-second buffer after
 
-**VIDEO STRUCTURE (REQUIRED):**
-- **INTRO:** First clip must introduce the topic (find a clip where the creator introduces the subject)
-- **BODY:** Main content clips covering the key points
-- **CONCLUSION:** Last clip must provide a summary or closing thought
+**VIDEO STRUCTURE:**
+- **INTRO:** First clip must introduce the topic
+- **BODY:** Main content clips covering key points  
+- **CONCLUSION:** Last clip must summarize or provide closing thought
 
-**Mandatory Workflow:**
+---
 
-1.  **Get Transcripts:**
-    *   Use `get_youtube_transcript` for ALL provided URLs.
-    *   Read the full_text to understand the content and note the video_id.
+## 🛑 INTERACTIVE WORKFLOW (FOLLOW EXACTLY)
 
-2.  **Create Your Segment Plan:**
-    *   Based on the transcripts, select clips that support your narrative.
-    *   MUST include intro clip, body clips, and conclusion clip.
-    *   For EACH segment, specify:
-        - video_id: The source video ID
-        - start_time: Start time in seconds (REQUIRED)
-        - end_time: End time in seconds (REQUIRED)
-        - text: The quote/content being used
+### CHECKPOINT 1: Before Analyzing Transcripts
+If transcripts are already cached, tell the user:
+> "I found [N] cached transcripts related to [topic]. I will analyze them to create a video script about [topic]. 
+> 
+> **Would you like me to proceed?** (Type 'yes' or provide different instructions)"
 
-3.  **Validate Your Plan:**
-    *   Call `create_video_script` with your planned segments.
-    *   Fix any validation errors (clip too long, rotation violation).
+If transcripts need to be fetched first:
+> "I need to fetch transcripts from the provided URLs first. Then I'll create a script.
+>
+> **Would you like me to proceed?**"
 
-4.  **Download Clips (NOT full videos!):**
-    *   For EACH segment, call `download_videos_from_youtube` with:
-        - urls: [the YouTube URL]
-        - start_time: segment start time (REQUIRED!)
-        - end_time: segment end time (REQUIRED!)
-    *   This downloads ONLY the clip portion, not the entire video.
-    *   SAVE the file paths returned - you'll need them for stitching!
+**WAIT for user response before continuing.**
 
-5.  **Verify Downloads (if needed):**
-    *   Call `list_downloads` to see all available files and their exact paths.
+---
 
-6.  **Stitch:**
-    *   Use `create_new_video` with the file_paths list (paths starting with /downloads/).
-    *   Do NOT use bash or terminal commands - use the create_new_video tool!
+### CHECKPOINT 2: Present the Script for Review
+After creating your segment plan, call `create_video_script` to validate it. Then present the complete script to the user:
 
-**OUTPUT FORMAT for segments:**
-```
+> "✅ **Script Created Successfully!**
+>
+> **Topic:** [topic]
+> **Total Duration:** [X] seconds
+> **Number of Clips:** [N]
+>
+> **Script Breakdown:**
+> 1. **[INTRO]** [Source Video Title] (Xs-Ys): "[text excerpt]"
+> 2. **[BODY]** [Source Video Title] (Xs-Ys): "[text excerpt]"
+> 3. ... (list all segments)
+> N. **[CONCLUSION]** [Source Video Title] (Xs-Ys): "[text excerpt]"
+>
+> **Please review the script above.** 
+> - Type **'yes'** to proceed with downloading the clips
+> - Or tell me what changes you'd like to make"
+
+**WAIT for user approval or modification requests before downloading.**
+
+---
+
+### CHECKPOINT 3: Before Stitching
+After all clips are downloaded successfully:
+
+> "✅ **All [N] clips downloaded successfully!**
+>
+> Downloaded files:
+> 1. [filename1]
+> 2. [filename2]
+> ... 
+>
+> I'm ready to stitch these clips together into the final video.
+>
+> **Would you like me to proceed with stitching?** (Type 'yes' to continue)"
+
+**WAIT for user confirmation before stitching.**
+
+---
+
+### CHECKPOINT 4: Final Result
+After stitching is complete:
+
+> "🎬 **Video Complete!**
+>
+> Your video has been saved to: [file path]
+> Duration: [X] seconds
+>
+> You can preview it in the video panel on the right."
+
+---
+
+## Tool Reference
+
+**Transcript Tools:**
+- `get_youtube_transcript(video_id_or_url)` - Fetch and cache a transcript
+- `list_cached_transcripts()` - See what's already cached
+
+**Script Tools:**
+- `create_video_script(segments, topic)` - Validate and save a script plan
+
+**Download Tools:**
+- `download_videos_from_youtube(urls, start_time, end_time)` - Download a clip
+  - ⚠️ **CRITICAL:** The video_id in your URL MUST exist in the transcript cache!
+  - Use `https://www.youtube.com/watch?v={video_id}` format
+  - The video_id must match EXACTLY what's in your create_video_script segments
+  - If you get an error, call `list_cached_transcripts()` to see valid video IDs
+
+**Stitch Tools:**
+- `create_new_video(file_paths)` - Combine clips into final video
+- `list_downloads()` - See downloaded files
+
+**⚠️ IMPORTANT: Video ID Matching**
+When downloading, you MUST use the EXACT video_id from the cached transcripts:
+1. Check your create_video_script segments for the video_id
+2. Build URL as: `https://www.youtube.com/watch?v={video_id}`
+3. The download tool will REJECT any video_id not in the cache
+
+**SEGMENT FORMAT:**
+```json
 {
-  "video_id": "abc123",
-  "start_time": 45,
-  "end_time": 52,
+  "video_id": "DImPLTurwLM",
+  "start_time": 45.5,
+  "end_time": 58.2,
   "text": "The battery life is incredible..."
 }
 ```
+
+**REMEMBER:** Always pause at checkpoints and wait for user confirmation!
 """
 
 mcp = FastMCP(name="YouTubeToolServer", instructions=WORKFLOW_SYSTEM_PROMPT)
@@ -86,8 +155,12 @@ mcp = FastMCP(name="YouTubeToolServer", instructions=WORKFLOW_SYSTEM_PROMPT)
 # This allows create_video_script to access transcripts without Claude passing large payloads
 TRANSCRIPT_CACHE: dict[str, dict] = {}
 
-# Cache persistence file
+# Separate cache for AI-generated transcripts (from create_video_script)
+GENERATED_TRANSCRIPT_CACHE: dict[str, dict] = {}
+
+# Cache persistence files
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "downloads", "transcript_cache.json")
+GENERATED_CACHE_FILE = os.path.join(os.path.dirname(__file__), "downloads", "generated_transcript_cache.json")
 
 def save_transcript_cache():
     """Save the transcript cache to a JSON file for persistence across restarts."""
@@ -99,6 +172,17 @@ def save_transcript_cache():
         print(f"[Cache] Saved {len(TRANSCRIPT_CACHE)} transcripts to {CACHE_FILE}", file=sys.stderr)
     except Exception as e:
         print(f"[Cache] Failed to save cache: {e}", file=sys.stderr)
+
+def save_generated_transcript_cache():
+    """Save the generated transcript cache to a JSON file for persistence across restarts."""
+    import json
+    try:
+        os.makedirs(os.path.dirname(GENERATED_CACHE_FILE), exist_ok=True)
+        with open(GENERATED_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(GENERATED_TRANSCRIPT_CACHE, f, indent=2, ensure_ascii=False)
+        print(f"[Cache] Saved {len(GENERATED_TRANSCRIPT_CACHE)} generated transcripts to {GENERATED_CACHE_FILE}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Cache] Failed to save generated cache: {e}", file=sys.stderr)
 
 def load_transcript_cache():
     """Load the transcript cache from disk if it exists."""
@@ -113,8 +197,44 @@ def load_transcript_cache():
             print(f"[Cache] Failed to load cache: {e}", file=sys.stderr)
             TRANSCRIPT_CACHE = {}
 
-# Load cache on module import
+def load_generated_transcript_cache():
+    """Load the generated transcript cache from disk if it exists."""
+    import json
+    global GENERATED_TRANSCRIPT_CACHE
+    if os.path.exists(GENERATED_CACHE_FILE):
+        try:
+            with open(GENERATED_CACHE_FILE, 'r', encoding='utf-8') as f:
+                GENERATED_TRANSCRIPT_CACHE = json.load(f)
+            print(f"[Cache] Loaded {len(GENERATED_TRANSCRIPT_CACHE)} generated transcripts from disk", file=sys.stderr)
+        except Exception as e:
+            print(f"[Cache] Failed to load generated cache: {e}", file=sys.stderr)
+            GENERATED_TRANSCRIPT_CACHE = {}
+
+# Load caches on module import
 load_transcript_cache()
+load_generated_transcript_cache()
+
+
+def extract_text_for_timerange(segments: list[dict], start: float, end: float) -> str:
+    """
+    Extract all text from transcript segments that fall within or overlap with the given time range.
+    
+    Args:
+        segments: List of transcript segments with 'start', 'end', and 'text' keys
+        start: Start time in seconds
+        end: End time in seconds
+        
+    Returns:
+        Combined text from all overlapping segments
+    """
+    text_parts = []
+    for seg in segments:
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", seg_start)
+        # Include if segment overlaps with our range
+        if seg_end > start and seg_start < end:
+            text_parts.append(seg.get("text", ""))
+    return " ".join(text_parts)
 
 @mcp.tool()
 def list_downloads(directory: str = "/downloads") -> dict:
@@ -264,16 +384,16 @@ def get_youtube_transcript(video_id_or_url: str) -> dict:
 def create_video_script(
     segments: list[dict],
     topic: str,
-    max_clip_duration: int = 10,
-    min_rotation_gap: int = 2
+    max_clip_duration: int = 35,
+    max_consecutive_same_source: int = 2
 ) -> dict:
     """
     Validates and structures a video script plan with ENFORCED rules.
     Call this BEFORE downloading clips to ensure your plan is valid.
     
     RULES ENFORCED:
-    - Each clip must be ≤ max_clip_duration seconds (default: 10)
-    - Must rotate sources: cannot use same video within min_rotation_gap clips (default: 2)
+    - Each clip must be ≤ max_clip_duration seconds (default: 35)
+    - Cannot use same video for more than max_consecutive_same_source clips in a row (default: 2)
     
     Args:
         segments: List of planned segments, each with:
@@ -282,8 +402,8 @@ def create_video_script(
             - start_time: Start time in seconds
             - end_time: End time in seconds
         topic: Topic of the video (e.g., "iPhone 17 pros/cons")
-        max_clip_duration: Maximum allowed duration per clip in seconds
-        min_rotation_gap: Minimum number of different videos before reusing same source
+        max_clip_duration: Maximum allowed duration per clip in seconds (default: 35)
+        max_consecutive_same_source: Max clips from same video in a row (default: 2)
     
     Returns:
         Dictionary with:
@@ -295,7 +415,8 @@ def create_video_script(
     """
     errors = []
     validated_segments = []
-    recent_sources = []
+    consecutive_count = 0
+    last_video_id = None
     
     for i, seg in enumerate(segments):
         # Validate required fields
@@ -315,25 +436,49 @@ def create_video_script(
                 f"(video: {video_id}, {start}s-{end}s)"
             )
         
-        # Rule 2: Check rotation
-        if video_id in recent_sources:
-            position = recent_sources.index(video_id)
-            clips_since = len(recent_sources) - position
-            errors.append(
-                f"Segment {i+1}: Rotation violation! Video '{video_id}' was used {clips_since} clip(s) ago. "
-                f"Must use at least {min_rotation_gap} different videos before reusing."
-            )
+        # Rule 2: Check consecutive same source (allow up to max_consecutive_same_source)
+        if video_id == last_video_id:
+            consecutive_count += 1
+            if consecutive_count >= max_consecutive_same_source:
+                errors.append(
+                    f"Segment {i+1}: Too many consecutive clips from '{video_id}'! "
+                    f"Maximum {max_consecutive_same_source} clips in a row allowed. "
+                    f"Please use a different source video for this segment."
+                )
+        else:
+            consecutive_count = 1
+            last_video_id = video_id
         
-        # Track recent sources (sliding window)
-        recent_sources.append(video_id)
-        if len(recent_sources) > min_rotation_gap:
-            recent_sources.pop(0)
+        # Verify text matches time range (warning only, not an error)
+        actual_text = None
+        text_warning = None
+        if video_id in TRANSCRIPT_CACHE:
+            cached = TRANSCRIPT_CACHE[video_id]
+            cached_segments = cached.get("segments", [])
+            if cached_segments:
+                actual_text = extract_text_for_timerange(cached_segments, start, end)
+                provided_text = seg.get("text", "").strip()
+                
+                # Simple check: if provided text is not empty and actual text is different
+                if provided_text and actual_text:
+                    # Check if provided text is contained in actual (allowing for minor differences)
+                    provided_words = set(provided_text.lower().split()[:10])  # First 10 words
+                    actual_words = set(actual_text.lower().split())
+                    overlap = len(provided_words & actual_words)
+                    
+                    if overlap < len(provided_words) * 0.5:  # Less than 50% word overlap
+                        text_warning = (
+                            f"Segment {i+1}: Text may not match time range. "
+                            f"Expected text at {start}s-{end}s: '{actual_text[:100]}...'"
+                        )
         
         # Build validated segment
         validated_segments.append({
             "index": i + 1,
             "video_id": video_id,
             "text": seg.get("text", ""),
+            "actual_text": actual_text,  # Include actual text from transcript for verification
+            "text_warning": text_warning,
             "start_time": start,
             "end_time": end,
             "duration": round(duration, 2)
@@ -359,8 +504,8 @@ def create_video_script(
                 "video_id": seg["video_id"]  # Store source video ID
             })
             
-        # Create cache entry
-        TRANSCRIPT_CACHE[script_id] = {
+        # Create cache entry in the GENERATED transcript cache (separate from fetched transcripts)
+        GENERATED_TRANSCRIPT_CACHE[script_id] = {
             "video_id": script_id,
             "title": f"Script: {topic}",
             "channel": "AI Generated Study",
@@ -370,20 +515,24 @@ def create_video_script(
             "segment_count": len(transcript_segments)
         }
         
-        save_transcript_cache()
+        save_generated_transcript_cache()
+    
+    # Collect text warnings (non-blocking warnings about potential text mismatches)
+    text_warnings = [seg.get("text_warning") for seg in validated_segments if seg.get("text_warning")]
     
     result = {
         "valid": len(errors) == 0,
         "script_id": script_id,
         "topic": topic,
         "errors": errors,
+        "warnings": text_warnings,  # Non-blocking warnings about text/timestamp mismatches
         "validated_segments": validated_segments,
         "total_duration": round(total_duration, 2),
         "segment_count": len(validated_segments),
         "source_count": unique_sources,
         "rules_applied": {
             "max_clip_duration": max_clip_duration,
-            "min_rotation_gap": min_rotation_gap
+            "max_consecutive_same_source": max_consecutive_same_source
         },
         "message": f"Script created and saved as {script_id}" if script_id else "Validation failed"
     }
@@ -613,6 +762,46 @@ def download_videos_from_youtube(urls: list[str], start_time: float, end_time: f
             f"Requested: {start_time}s to {end_time}s"
         )
     
+    # Extract and validate video_ids from URLs against cached transcripts
+    import re
+    validated_urls = []
+    for url in urls:
+        # Extract video_id from various YouTube URL formats
+        video_id = None
+        patterns = [
+            r'(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})',
+            r'^([a-zA-Z0-9_-]{11})$'  # Just the ID itself
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                video_id = match.group(1)
+                break
+        
+        if not video_id:
+            raise ToolError(
+                f"Could not extract video_id from URL: {url}\n"
+                f"Please use a valid YouTube URL or video ID."
+            )
+        
+        # Check if this video_id exists in our transcript cache
+        if video_id not in TRANSCRIPT_CACHE:
+            cached_ids = list(TRANSCRIPT_CACHE.keys())
+            raise ToolError(
+                f"❌ Video ID '{video_id}' is NOT in the transcript cache!\n\n"
+                f"Available cached video IDs: {cached_ids}\n\n"
+                f"Please use list_cached_transcripts() to see available videos, "
+                f"and ensure the video_id matches one from your create_video_script segments."
+            )
+        
+        # Build proper YouTube URL from validated video_id
+        proper_url = f"https://www.youtube.com/watch?v={video_id}"
+        validated_urls.append(proper_url)
+        print(f"✅ Validated video_id '{video_id}' exists in cache", file=sys.stderr)
+    
+    # Replace urls with validated URLs
+    urls = validated_urls
+    
     # Ensure the output directory exists (do this once)
     try:
         os.makedirs(output_path, exist_ok=True)
@@ -636,62 +825,122 @@ def download_videos_from_youtube(urls: list[str], start_time: float, end_time: f
         'logger': None,
     }
 
-    # Configure partial download (start_time and end_time are now required)
-    print(f"Configuring partial download from {start_time}s to {end_time}s", file=sys.stderr)
+    # Add buffer to capture full dialogue (YouTube timestamps can be slightly off)
+    # Buffer BEFORE: 2 seconds to catch words at the start
+    # Buffer AFTER: 1 second to catch trailing words
+    buffer_before = 2.0
+    buffer_after = 1.0
     
+    # Apply buffers (but don't go below 0 for start)
+    actual_start = max(0, start_time - buffer_before)
+    actual_end = end_time + buffer_after
+    
+    print(f"[Buffer Applied] Original: {start_time}s-{end_time}s → Actual: {actual_start}s-{actual_end}s (+{buffer_before}s before, +{buffer_after}s after)", file=sys.stderr)
+
+    # Configure partial download with buffered times
     def download_range_func(info_dict, ydl):
-        return [{'start_time': start_time, 'end_time': end_time}]
+        return [{'start_time': actual_start, 'end_time': actual_end}]
         
     ydl_opts['download_ranges'] = download_range_func
     # Force keyframes at cuts ensures accurate timing but requires re-encoding
     ydl_opts['force_keyframes_at_cuts'] = True
     
-    # Update filename template to include start and end times
+    # Update filename template to include ORIGINAL start and end times (for reference)
     # Format floats for safe filenames: 5.56 -> 5-56 (avoid extra periods in filename)
     start_str = f"{start_time:.2f}".replace('.', '-')
     end_str = f"{end_time:.2f}".replace('.', '-')
     ydl_opts['outtmpl'] = os.path.join(output_path, f'%(title)s - %(id)s_{start_str}_{end_str}.%(ext)s')
 
     successful_downloads = []
+    failed_downloads = []
 
     # Loop through each URL provided in the list
     for url in urls:
         print(f"Attempting to download video from: {url}", file=sys.stderr)
-        try:
-            info_dict = None
-            final_filename = None
+        
+        # Retry logic: try up to 2 times
+        max_retries = 2
+        success = False
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                info_dict = None
+                final_filename = None
 
-            with contextlib.redirect_stdout(sys.stderr), contextlib.redirect_stderr(sys.stderr):
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"Extracting info and downloading: {url}", file=sys.stderr)
-                    info_dict = ydl.extract_info(url, download=True)
-            
-            if info_dict:
-                # Re-init ydl (this is cheap) just to use its helper method
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    final_filename = ydl.prepare_filename(info_dict)
-            else:
-                print(f"yt-dlp failed to return info_dict for {url}.", file=sys.stderr)
-                continue # Skip to the next URL
+                with contextlib.redirect_stdout(sys.stderr), contextlib.redirect_stderr(sys.stderr):
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        print(f"Extracting info and downloading: {url} (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
+                        info_dict = ydl.extract_info(url, download=True)
+                
+                if info_dict:
+                    # Re-init ydl (this is cheap) just to use its helper method
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        final_filename = ydl.prepare_filename(info_dict)
+                else:
+                    raise Exception(f"yt-dlp failed to return info_dict for {url}")
 
-            if not final_filename or not os.path.exists(final_filename):
-                print(f"File not found at expected path for {url}: {final_filename}", file=sys.stderr)
-                continue # Skip to the next URL
+                if not final_filename or not os.path.exists(final_filename):
+                    raise Exception(f"File not found at expected path: {final_filename}")
 
-            print(f"Successfully downloaded {url} to: {final_filename}", file=sys.stderr)
-            
-            # Add the successful download to our results list
-            successful_downloads.append({"file_path": final_filename})
-
-        except yt_dlp.utils.DownloadError as e:
-            print(f"yt-dlp Download Error for {url}: {e}", file=sys.stderr)
-            # Continue to the next video
-        except Exception as e:
-            print(f"An unexpected error occurred for {url}: {e}", file=sys.stderr)
-            # Continue to the next video
-
-    # After the loop, return the list of all successful downloads
-    return successful_downloads
+                print(f"Successfully downloaded {url} to: {final_filename}", file=sys.stderr)
+                
+                # Add the successful download to our results list
+                successful_downloads.append({
+                    "file_path": final_filename,
+                    "url": url,
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
+                success = True
+                break  # Success, exit retry loop
+                
+            except yt_dlp.utils.DownloadError as e:
+                last_error = str(e)
+                print(f"yt-dlp Download Error for {url} (attempt {attempt + 1}): {e}", file=sys.stderr)
+                if attempt < max_retries - 1:
+                    print(f"Retrying in 2 seconds...", file=sys.stderr)
+                    time.sleep(2)
+            except Exception as e:
+                last_error = str(e)
+                print(f"Unexpected error for {url} (attempt {attempt + 1}): {e}", file=sys.stderr)
+                if attempt < max_retries - 1:
+                    print(f"Retrying in 2 seconds...", file=sys.stderr)
+                    time.sleep(2)
+        
+        if not success:
+            # All retries failed
+            failed_downloads.append({
+                "url": url,
+                "start_time": start_time,
+                "end_time": end_time,
+                "error": last_error
+            })
+    
+    # If there were failures, include them in the response so the user can decide what to do
+    result = {
+        "successful": successful_downloads,
+        "success_count": len(successful_downloads),
+        "failed": failed_downloads,
+        "failed_count": len(failed_downloads)
+    }
+    
+    if failed_downloads:
+        result["message"] = (
+            f"⚠️ {len(failed_downloads)} download(s) failed after retrying. "
+            f"Options: 1) Try again with same clips, 2) Find alternative clips from the transcript. "
+            f"If choosing alternative clips, use create_video_script to validate and update the cache."
+        )
+        result["action_required"] = True
+    else:
+        result["message"] = f"✅ All {len(successful_downloads)} clip(s) downloaded successfully."
+        result["action_required"] = False
+    
+    # For backwards compatibility, also return the list format if everything succeeded
+    if not failed_downloads:
+        return successful_downloads
+    
+    return result
 
 def format_time(t):
     """Formats time in seconds to HH:MM:SS.ms string (supports floats)."""

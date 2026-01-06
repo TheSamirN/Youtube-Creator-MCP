@@ -190,6 +190,9 @@ body {
     padding: var(--spacing-md) var(--spacing-lg);
     border-bottom: 1px solid var(--border-color);
     background: var(--bg-glass);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .panel-header h3 {
@@ -797,6 +800,231 @@ body {
 .btn-secondary:hover {
     border-color: var(--accent-primary);
     background: var(--bg-secondary);
+}
+
+/* ============================================
+   Transcript Tabs
+   ============================================ */
+
+.transcript-tabs {
+    display: flex;
+    gap: var(--spacing-xs);
+}
+
+.tab-btn {
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.tab-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.tab-btn.active {
+    background: var(--accent-gradient);
+    border-color: transparent;
+    color: white;
+}
+
+/* ============================================
+   Transcript Controls
+   ============================================ */
+
+.transcript-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* ============================================
+   Playback Controls
+   ============================================ */
+
+.transcript-playback-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.btn-play,
+.btn-stop {
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-play:hover:not(:disabled) {
+    background: var(--success);
+    border-color: var(--success);
+    color: white;
+}
+
+.btn-stop:hover:not(:disabled) {
+    background: var(--error);
+    border-color: var(--error);
+    color: white;
+}
+
+.btn-play:disabled,
+.btn-stop:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.playback-status {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+/* Playing segment highlight */
+.transcript-segment.playing {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: var(--success);
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.transcript-segment.playing .segment-time {
+    color: var(--success);
+}
+
+/* ============================================
+   Chat Message Actions / Copy Button
+   ============================================ */
+
+.message {
+    position: relative;
+}
+
+.message-actions {
+    position: absolute;
+    top: var(--spacing-sm);
+    right: var(--spacing-sm);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+}
+
+.copy-btn {
+    padding: var(--spacing-xs);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.copy-btn:hover {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.copy-btn.copied {
+    background: var(--success);
+    border-color: var(--success);
+}
+
+/* ============================================
+   Tool Description in Modal
+   ============================================ */
+
+.tool-description {
+    margin-bottom: var(--spacing-lg);
+    padding: var(--spacing-md);
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--accent-primary);
+}
+
+.tool-description p {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin: 0;
+}
+
+/* ============================================
+   Pending Tool Call Indicator
+   ============================================ */
+
+.tool-call.pending {
+    border-color: var(--warning);
+    animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+.tool-call.pending .tool-call-header {
+    color: var(--warning);
+}
+
+@keyframes pulse-border {
+
+    0%,
+    100% {
+        border-color: var(--warning);
+        box-shadow: 0 0 5px rgba(245, 158, 11, 0.3);
+    }
+
+    50% {
+        border-color: var(--accent-primary);
+        box-shadow: 0 0 15px rgba(245, 158, 11, 0.5);
+    }
+}
+
+/* ============================================
+   Log Export Button
+   ============================================ */
+
+.log-export-controls {
+    display: flex;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-export {
+    padding: var(--spacing-xs) var(--spacing-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+}
+
+.btn-export:hover {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: white;
 }
 
 /* ============================================

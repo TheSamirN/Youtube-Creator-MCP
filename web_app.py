@@ -38,6 +38,8 @@ from server import (
     WORKFLOW_SYSTEM_PROMPT,
     TRANSCRIPT_CACHE,
     save_transcript_cache,
+    GENERATED_TRANSCRIPT_CACHE,
+    save_generated_transcript_cache,
 )
 
 # Load environment variables
@@ -300,14 +302,14 @@ TOOL_DEFINITIONS_JSON = [
     },
     {
         "name": "create_video_script",
-        "description": "Validates a video script plan with enforced rules (max clip duration, rotation). Call before downloading.",
+        "description": "Validates a video script plan with enforced rules (max 35s clips, max 2 consecutive from same source). Call before downloading.",
         "parameters": {
             "type": "object",
             "properties": {
                 "segments": {"type": "array", "description": "List of segments with video_id, text, start_time, end_time"},
                 "topic": {"type": "string", "description": "Topic of the video"},
-                "max_clip_duration": {"type": "integer", "description": "Maximum duration per clip in seconds (default: 10)"},
-                "min_rotation_gap": {"type": "integer", "description": "Minimum clips before reusing same source (default: 2)"}
+                "max_clip_duration": {"type": "integer", "description": "Maximum duration per clip in seconds (default: 35)"},
+                "max_consecutive_same_source": {"type": "integer", "description": "Max clips from same video in a row (default: 2)"}
             },
             "required": ["segments", "topic"]
         }
@@ -607,15 +609,27 @@ CRITICAL RULES:
 """
             
             # Generate response
+            # response = client.models.generate_content(
+            #     model="models/gemini-2.5-flash",
+            #     contents=contents,
+            #     config=types.GenerateContentConfig(
+            #         system_instruction=extended_system_prompt,
+            #         tools=TOOLS,
+            #         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            #     )
+            # )
+
             response = client.models.generate_content(
-                model="models/gemini-2.5-flash",
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=extended_system_prompt,
-                    tools=TOOLS,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                )
-            )
+    # Change the model ID here
+    model="models/gemini-2.5-pro", 
+    contents=contents,
+    config=types.GenerateContentConfig(
+        system_instruction=extended_system_prompt,
+        tools=TOOLS,
+        # Keep your existing logic for function calling
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    )
+)
         except Exception as e:
             return {"error": f"Gemini API error: {str(e)}", "response": "", "tool_calls": [], "tool_results": []}
         
@@ -760,6 +774,99 @@ async def delete_transcript(video_id: str):
         save_transcript_cache()
         return {"success": True, "message": f"Deleted transcript for {video_id}"}
     raise HTTPException(status_code=404, detail=f"Transcript for '{video_id}' not found")
+
+
+# ============================================================================
+# Generated Transcripts API (AI-created scripts from create_video_script)
+# ============================================================================
+
+@app.get("/api/generated-transcripts")
+async def get_generated_transcripts():
+    """Get all generated transcripts (AI-created scripts)"""
+    return {"transcripts": GENERATED_TRANSCRIPT_CACHE}
+
+
+@app.get("/api/generated-transcripts/{script_id}")
+async def get_generated_transcript_by_id(script_id: str):
+    """Get a specific generated transcript by script ID"""
+    if script_id in GENERATED_TRANSCRIPT_CACHE:
+        return GENERATED_TRANSCRIPT_CACHE[script_id]
+    raise HTTPException(status_code=404, detail=f"Generated transcript '{script_id}' not found in cache")
+
+
+@app.delete("/api/generated-transcripts")
+async def clear_all_generated_transcripts():
+    """Clear all generated transcripts"""
+    count = len(GENERATED_TRANSCRIPT_CACHE)
+    GENERATED_TRANSCRIPT_CACHE.clear()
+    save_generated_transcript_cache()
+    return {"success": True, "message": f"Cleared {count} generated transcripts"}
+
+
+@app.delete("/api/generated-transcripts/{script_id}")
+async def delete_generated_transcript(script_id: str):
+    """Delete a specific generated transcript from cache"""
+    if script_id in GENERATED_TRANSCRIPT_CACHE:
+        del GENERATED_TRANSCRIPT_CACHE[script_id]
+        save_generated_transcript_cache()
+        return {"success": True, "message": f"Deleted generated transcript {script_id}"}
+    raise HTTPException(status_code=404, detail=f"Generated transcript '{script_id}' not found")
+
+
+# ============================================================================
+# Clip Verification API
+# ============================================================================
+
+from server import extract_text_for_timerange
+
+class VerifyClipRequest(BaseModel):
+    video_id: str
+    start_time: float
+    end_time: float
+
+@app.post("/api/verify-clip")
+async def verify_clip(request: VerifyClipRequest):
+    """
+    Verify what text would be captured for a given time range.
+    Uses the cached transcript to extract overlapping text segments.
+    
+    Useful for ensuring clip timestamps match the expected transcript text.
+    """
+    if request.video_id not in TRANSCRIPT_CACHE:
+        raise HTTPException(status_code=404, detail=f"Transcript for '{request.video_id}' not cached. Fetch it first.")
+    
+    transcript = TRANSCRIPT_CACHE[request.video_id]
+    segments = transcript.get("segments", [])
+    
+    if not segments:
+        raise HTTPException(status_code=400, detail="Transcript has no segments")
+    
+    captured_text = extract_text_for_timerange(segments, request.start_time, request.end_time)
+    duration = request.end_time - request.start_time
+    
+    # Find overlapping segments for detailed info
+    overlapping_segments = []
+    for seg in segments:
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", seg_start)
+        if seg_end > request.start_time and seg_start < request.end_time:
+            overlapping_segments.append({
+                "text": seg.get("text", ""),
+                "start": seg_start,
+                "end": seg_end,
+                "fully_captured": seg_start >= request.start_time and seg_end <= request.end_time
+            })
+    
+    return {
+        "video_id": request.video_id,
+        "start_time": request.start_time,
+        "end_time": request.end_time,
+        "duration": round(duration, 2),
+        "captured_text": captured_text,
+        "overlapping_segments": overlapping_segments,
+        "segment_count": len(overlapping_segments),
+        "note": "Text from overlapping segments. 'fully_captured' indicates if entire segment falls within time range."
+    }
 
 
 # ============================================================================

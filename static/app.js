@@ -15,13 +15,18 @@ const state = {
     tools: [],
     isLoading: false,
     activeTab: 'fetched',  // 'fetched' or 'generated'
+    // Mode: 'creative' or 'precise'
+    mode: 'creative',
     // Playback state
     isPlaying: false,
     playbackSegmentIndex: 0,
     playbackTimer: null,
     currentSegments: [],
     // Log tracking for export
-    chatLogs: []
+    chatLogs: [],
+    // Server logs state
+    serverLogsAutoRefresh: true,
+    serverLogsInterval: null
 };
 
 // ============================================================================
@@ -56,7 +61,16 @@ const elements = {
     stopTranscriptBtn: document.getElementById('stop-transcript-btn'),
     playbackStatus: document.getElementById('playback-status'),
     // Export elements
-    exportLogsBtn: document.getElementById('export-logs-btn')
+    exportLogsBtn: document.getElementById('export-logs-btn'),
+    // Server logs elements
+    logsContainer: document.getElementById('logs-container'),
+    progressSection: document.getElementById('progress-section'),
+    progressLabel: document.getElementById('progress-label'),
+    progressFill: document.getElementById('progress-fill'),
+    progressPercent: document.getElementById('progress-percent'),
+    refreshStatus: document.getElementById('refresh-status'),
+    toggleRefreshBtn: document.getElementById('toggle-refresh-btn'),
+    clearLogsBtn: document.getElementById('clear-logs-btn')
 };
 
 // ============================================================================
@@ -114,11 +128,46 @@ function setupEventListeners() {
 
     // Log export
     elements.exportLogsBtn.addEventListener('click', exportLogsToHtml);
+
+    // Server logs controls
+    if (elements.toggleRefreshBtn) {
+        elements.toggleRefreshBtn.addEventListener('click', toggleServerLogsRefresh);
+    }
+    if (elements.clearLogsBtn) {
+        elements.clearLogsBtn.addEventListener('click', clearServerLogs);
+    }
+
+    // Mode toggle
+    document.getElementById('mode-creative')?.addEventListener('click', () => setMode('creative'));
+    document.getElementById('mode-precise')?.addEventListener('click', () => setMode('precise'));
+
+    // Start server logs auto-refresh
+    startServerLogsRefresh();
 }
 
 // ============================================================================
 // Chat Functions
 // ============================================================================
+
+function setMode(mode) {
+    state.mode = mode;
+
+    // Update button states
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    // Clear conversation history when switching modes
+    state.conversationHistory = [];
+
+    // Show mode-specific welcome message
+    const modeMessages = {
+        creative: '🎨 <strong>Creative Mode</strong>: I\'ll create original remix videos from transcripts.',
+        precise: '🎯 <strong>Precise Mode</strong>: I\'ll extract exact words from videos to match your text.'
+    };
+
+    addMessageToChat('assistant', `<p>${modeMessages[mode]}</p>`);
+}
 
 async function sendMessage() {
     const message = elements.chatInput.value.trim();
@@ -151,7 +200,8 @@ async function sendMessage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: message,
-                history: state.conversationHistory.slice(0, -1)
+                history: state.conversationHistory.slice(0, -1),
+                mode: state.mode
             })
         });
 
@@ -332,22 +382,48 @@ async function loadGeneratedTranscripts() {
 function switchTab(tab) {
     state.activeTab = tab;
 
-    // Update tab button styles
+    // Update buttons
     elements.tabFetched.classList.toggle('active', tab === 'fetched');
     elements.tabGenerated.classList.toggle('active', tab === 'generated');
+    if (elements.tabPrecise) {
+        elements.tabPrecise.classList.toggle('active', tab === 'precise');
+    }
 
     // Stop any current playback
     stopPlayback();
 
-    // Update selector for the new tab
-    updateTranscriptSelector();
+    // Toggle visibility based on tab
+    if (tab === 'precise') {
+        if (elements.transcriptControls) elements.transcriptControls.style.display = 'none';
+        if (elements.playbackControls) elements.playbackControls.style.display = 'none';
+        elements.transcriptContainer.style.display = 'none';
 
-    // Clear current display
-    elements.transcriptContainer.innerHTML = `
-        <div class="empty-state">
-            <p>Select a ${tab === 'fetched' ? 'transcript' : 'generated script'} from the dropdown above.</p>
-        </div>
-    `;
+        // Show precise container
+        if (elements.preciseWordsContainer) {
+            elements.preciseWordsContainer.style.display = 'flex';
+            loadPreciseWords(); // Refresh data
+        }
+    } else {
+        if (elements.transcriptControls) elements.transcriptControls.style.display = 'flex';
+        if (elements.playbackControls) elements.playbackControls.style.display = 'flex';
+        elements.transcriptContainer.style.display = 'block';
+
+        // Hide precise container
+        if (elements.preciseWordsContainer) {
+            elements.preciseWordsContainer.style.display = 'none';
+        }
+
+        updateTranscriptSelector();
+
+        // Restore empty state if needed
+        if (!elements.transcriptContainer.innerHTML.trim()) {
+            elements.transcriptContainer.innerHTML = `
+                <div class="empty-state">
+                    <p>Select a ${tab === 'fetched' ? 'transcript' : 'generated script'} from the dropdown above.</p>
+                </div>
+            `;
+        }
+    }
 }
 
 function updateTranscriptSelector() {
@@ -1106,6 +1182,24 @@ function exportLogsToHtml() {
             margin-bottom: 0.5rem;
         }
         
+        details {
+            margin-top: 0.5rem;
+        }
+        
+        summary {
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+            background: var(--bg-primary);
+            margin-bottom: 0.5rem;
+        }
+        
+        summary:hover {
+            background: var(--bg-secondary);
+        }
+        
         pre {
             background: var(--bg-primary);
             padding: 1rem;
@@ -1113,6 +1207,10 @@ function exportLogsToHtml() {
             overflow-x: auto;
             font-size: 0.8rem;
             margin-top: 0.5rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
         }
         
         code {
@@ -1232,10 +1330,13 @@ function renderLogEntry(log) {
                 </div>
                 <div class="tool-info">
                     <h4>${log.tool_name}</h4>
-                    <strong>Arguments:</strong>
-                    <pre>${JSON.stringify(log.args, null, 2)}</pre>
-                    <strong>Result:</strong>
-                    <pre>${JSON.stringify(log.result, null, 2)}</pre>
+                    <details>
+                        <summary>📋 View Arguments & Result (click to expand)</summary>
+                        <strong>Arguments:</strong>
+                        <pre>${JSON.stringify(log.args, null, 2)}</pre>
+                        <strong>Result:</strong>
+                        <pre>${JSON.stringify(log.result, null, 2)}</pre>
+                    </details>
                 </div>
             </div>
         `;
@@ -1254,6 +1355,314 @@ function renderLogEntry(log) {
     }
 
     return '';
+}
+
+// ============================================================================
+// Server Logs Functions
+// ============================================================================
+
+async function fetchServerLogs() {
+    try {
+        const response = await fetch('/api/logs');
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        // Update logs display
+        if (elements.logsContainer && data.logs) {
+            renderServerLogs(data.logs);
+        }
+
+        // Update progress bar
+        if (data.progress && data.progress.active) {
+            showProgress(data.progress);
+        } else {
+            hideProgress();
+        }
+    } catch (error) {
+        console.error('Failed to fetch server logs:', error);
+    }
+}
+
+function renderServerLogs(logs) {
+    if (!elements.logsContainer) return;
+
+    elements.logsContainer.innerHTML = logs.map(log => `
+        <div class="log-entry ${log.level}">
+            <span class="log-time">${log.time}</span>
+            <span class="log-message">${escapeHtml(log.message)}</span>
+        </div>
+    `).join('');
+
+    // Auto-scroll to bottom
+    elements.logsContainer.scrollTop = elements.logsContainer.scrollHeight;
+}
+
+function showProgress(progress) {
+    if (!elements.progressSection) return;
+
+    elements.progressSection.style.display = 'block';
+    if (elements.progressLabel) elements.progressLabel.textContent = progress.label;
+    if (elements.progressFill) elements.progressFill.style.width = `${progress.percent}%`;
+    if (elements.progressPercent) elements.progressPercent.textContent = `${progress.percent}%`;
+}
+
+function hideProgress() {
+    if (elements.progressSection) {
+        elements.progressSection.style.display = 'none';
+    }
+}
+
+function startServerLogsRefresh() {
+    // Fetch immediately
+    fetchServerLogs();
+
+    // Then every 10 seconds
+    state.serverLogsInterval = setInterval(fetchServerLogs, 10000);
+    state.serverLogsAutoRefresh = true;
+
+    if (elements.refreshStatus) {
+        elements.refreshStatus.textContent = '🔄 Auto-refresh: ON';
+        elements.refreshStatus.classList.remove('paused');
+    }
+    if (elements.toggleRefreshBtn) {
+        elements.toggleRefreshBtn.textContent = '⏸️';
+    }
+}
+
+function stopServerLogsRefresh() {
+    if (state.serverLogsInterval) {
+        clearInterval(state.serverLogsInterval);
+        state.serverLogsInterval = null;
+    }
+    state.serverLogsAutoRefresh = false;
+
+    if (elements.refreshStatus) {
+        elements.refreshStatus.textContent = '⏸️ Auto-refresh: OFF';
+        elements.refreshStatus.classList.add('paused');
+    }
+    if (elements.toggleRefreshBtn) {
+        elements.toggleRefreshBtn.textContent = '▶️';
+    }
+}
+
+function toggleServerLogsRefresh() {
+    if (state.serverLogsAutoRefresh) {
+        stopServerLogsRefresh();
+    } else {
+        startServerLogsRefresh();
+    }
+}
+
+// ============================================================================
+// Precise Words Functions
+// ============================================================================
+
+async function loadPreciseWords() {
+    if (state.isLoading) return;
+
+    try {
+        const response = await fetch('/api/precise-words');
+        if (!response.ok) throw new Error('Failed to fetch precise words');
+
+        const data = await response.json();
+        state.preciseWords = {};
+
+        // Populate state and dropdown
+        const selector = elements.preciseSentenceSelector;
+        const currentSelection = selector.value;
+
+        // Clear options except default
+        while (selector.options.length > 1) {
+            selector.remove(1);
+        }
+
+        if (data.sentences && data.sentences.length > 0) {
+            data.sentences.forEach(s => {
+                state.preciseWords[s.sentence_id] = s;
+
+                const option = document.createElement('option');
+                option.value = s.sentence_id;
+                option.textContent = s.sentence;
+                selector.appendChild(option);
+            });
+
+            // Restore selection or select latest
+            if (currentSelection && state.preciseWords[currentSelection]) {
+                selector.value = currentSelection;
+            } else if (data.sentences.length > 0) {
+                // Select most recent by default?
+                selector.value = data.sentences[data.sentences.length - 1].sentence_id;
+            }
+
+            renderPreciseWords();
+        } else {
+            elements.preciseWordsGrid.innerHTML = `
+                <div class="empty-state">
+                    <p>No word clips extracted yet.</p>
+                    <p class="hint">Switch to Precise mode and request a sentence to extract!</p>
+                </div>
+            `;
+            elements.createPreciseVideoBtn.disabled = true;
+        }
+
+    } catch (error) {
+        console.error('Error loading precise words:', error);
+    }
+}
+
+function renderPreciseWords() {
+    const sentenceId = elements.preciseSentenceSelector.value;
+    const grid = elements.preciseWordsGrid;
+
+    if (!sentenceId || !state.preciseWords[sentenceId]) {
+        grid.innerHTML = '<div class="empty-state"><p>Select a sentence to view word clips</p></div>';
+        elements.createPreciseVideoBtn.disabled = true;
+        return;
+    }
+
+    const data = state.preciseWords[sentenceId];
+    elements.createPreciseVideoBtn.disabled = false;
+
+    // Sort words by index
+    const sortedWords = Object.keys(data.words)
+        .map(w => ({ word: w, ...data.words[w] }))
+        .sort((a, b) => a.word_index - b.word_index);
+
+    grid.innerHTML = sortedWords.map(wordData => {
+        const clips = wordData.clips || [];
+
+        let clipsHtml = '';
+        if (clips.length === 0) {
+            clipsHtml = '<div class="no-clips">No clips found for this word</div>';
+        } else {
+            clipsHtml = clips.map((clip, idx) => {
+                const isSelected = idx === 0; // Default select first
+                const confidenceClass = clip.confidence >= 0.9 ? 'high' : 'low';
+
+                // Ensure inputs have unique names per word
+                const radioName = `clip-${sentenceId}-${wordData.word_index}`;
+
+                return `
+                    <div class="clip-option ${isSelected ? 'selected' : ''}" 
+                         onclick="selectClip(this, '${radioName}')">
+                        <input type="radio" name="${radioName}" value="${clip.clip_index}" 
+                               ${isSelected ? 'checked' : ''} style="pointer-events: none;">
+                        <div class="clip-info">
+                            <span class="clip-source">${clip.video_title.substring(0, 30)}...</span>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="clip-duration">${clip.duration.toFixed(2)}s</span>
+                                <span class="clip-confidence ${confidenceClass}">${(clip.confidence * 100).toFixed(0)}% conf</span>
+                            </div>
+                        </div>
+                        <button class="clip-preview-btn" 
+                                onclick="event.stopPropagation(); playVideo('${clip.video_url.replace(/'/g, "\\'")}', 'Preview: ${wordData.word}')">
+                            ▶
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        return `
+            <div class="word-card">
+                <div class="word-card-header">
+                    <span class="word-index">${wordData.word_index + 1}</span>
+                    <span class="word-text">${wordData.word}</span>
+                </div>
+                <div class="word-clips">
+                    ${clipsHtml}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Global function for onclick
+window.selectClip = function (element, radioName) {
+    // Visual selection
+    document.querySelectorAll(`input[name="${radioName}"]`).forEach(input => {
+        input.closest('.clip-option').classList.remove('selected');
+    });
+
+    element.classList.add('selected');
+    const radio = element.querySelector('input[type="radio"]');
+    radio.checked = true;
+};
+
+async function createPreciseVideo() {
+    const sentenceId = elements.preciseSentenceSelector.value;
+    if (!sentenceId) return;
+
+    // Gather selections
+    const selections = {};
+    const data = state.preciseWords[sentenceId];
+
+    Object.keys(data.words).forEach(word => {
+        const wordIdx = data.words[word].word_index;
+        const radioName = `clip-${sentenceId}-${wordIdx}`;
+        const selected = document.querySelector(`input[name="${radioName}"]:checked`);
+        if (selected) {
+            selections[word] = parseInt(selected.value);
+        } else {
+            selections[word] = 0; // Default
+        }
+    });
+
+    setLoading(true);
+    elements.createPreciseVideoBtn.disabled = true;
+    elements.createPreciseVideoBtn.textContent = '⏱️ Stitching...';
+
+    try {
+        const response = await fetch('/api/precise-create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sentence_id: sentenceId,
+                selections: selections
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Failed to create video');
+        }
+
+        const result = await response.json();
+
+        // Show success modal
+        const modalBody = elements.toolResultContent;
+        modalBody.innerHTML = `
+            <h3>✅ Video Created Successfully!</h3>
+            <p><strong>Sentence:</strong> "${result.sentence}"</p>
+            <div style="margin-top: 15px; border-radius: 8px; overflow: hidden; background: #000;">
+                <video controls autoplay style="width: 100%; display: block;" src="/videos/${result.file_path.split(/[\\/]/).pop()}">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+            <div style="margin-top: 15px; text-align: right;">
+                <a href="/videos/${result.file_path.split(/[\\/]/).pop()}" download class="btn-primary">⬇️ Download Video</a>
+            </div>
+        `;
+        elements.modalResult.style.display = 'block';
+
+    } catch (error) {
+        console.error('Error creating precise video:', error);
+        alert(`Error: ${error.message}`);
+    } finally {
+        setLoading(false);
+        elements.createPreciseVideoBtn.disabled = false;
+        elements.createPreciseVideoBtn.textContent = '🎬 Create Video from Selection';
+    }
+}
+
+// Clear logs function
+function clearServerLogs() {
+    fetch('/api/logs', { method: 'DELETE' })
+        .then(() => {
+            // UI update handled by auto-refresh
+        })
+        .catch(err => console.error('Failed to clear logs:', err));
 }
 
 // Make functions globally available

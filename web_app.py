@@ -42,6 +42,30 @@ from server import (
     save_generated_transcript_cache,
 )
 
+# Import precise mode tools
+from tools.precise import (
+    search_words_in_transcripts,
+    extract_precise_word,
+    stitch_word_clips,
+    extract_word_options,
+    stitch_selected_clips,
+    # Legacy wrappers for backwards compatibility
+    find_words_in_transcripts,
+    create_word_video,
+)
+from tools.shared import PRECISE_WORD_CLIPS
+
+# Load precise mode workflow prompt
+def load_precise_workflow_prompt():
+    """Load the precise mode workflow prompt from file."""
+    prompt_path = Path("./prompts/precise_workflow.md")
+    try:
+        return prompt_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "You are a precision video editor. Extract exact words from videos."
+
+PRECISE_WORKFLOW_PROMPT = load_precise_workflow_prompt()
+
 # Load environment variables
 load_dotenv()
 
@@ -72,6 +96,56 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 # Static files directory
 STATIC_DIR = Path("./static")
 STATIC_DIR.mkdir(exist_ok=True)
+
+# ============================================================================
+# Server Logs Collection (for frontend display)
+# ============================================================================
+from datetime import datetime
+from collections import deque
+import threading
+
+# Thread-safe log storage (last 200 entries)
+SERVER_LOGS = deque(maxlen=200)
+LOG_LOCK = threading.Lock()
+
+# Progress tracking
+PROGRESS_STATE = {
+    "active": False,
+    "label": "",
+    "current": 0,
+    "total": 0,
+    "percent": 0
+}
+
+def add_log(message: str, level: str = "info"):
+    """Add a log entry to the server logs."""
+    with LOG_LOCK:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        SERVER_LOGS.append({
+            "time": timestamp,
+            "message": message,
+            "level": level
+        })
+
+def update_progress(label: str, current: int, total: int):
+    """Update progress bar state."""
+    global PROGRESS_STATE
+    PROGRESS_STATE = {
+        "active": True,
+        "label": label,
+        "current": current,
+        "total": total,
+        "percent": int((current / total) * 100) if total > 0 else 0
+    }
+    add_log(f"{label}: {current}/{total} ({PROGRESS_STATE['percent']}%)", "info")
+
+def clear_progress():
+    """Clear progress bar."""
+    global PROGRESS_STATE
+    PROGRESS_STATE = {"active": False, "label": "", "current": 0, "total": 0, "percent": 0}
+
+# Add initial log
+add_log("Server started", "success")
 
 # ============================================================================
 # Tool Definitions for Gemini (new google.genai format)
@@ -281,6 +355,75 @@ TOOL_DECLARATIONS = [
             },
             required=["video_id"]
         )
+    ),
+    # Precise mode tools
+    types.FunctionDeclaration(
+        name="search_words_in_transcripts",
+        description="[PRECISE MODE] Phase 2: Search cached transcripts for each word in a target sentence. Returns the sentence context with timestamps for each word, with the target word BOLDED. Use this to create an execution plan.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "target_sentence": types.Schema(
+                    type=types.Type.STRING,
+                    description="The target sentence to construct (e.g., 'iPhone 17 is the Pro')"
+                ),
+                "video_ids": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                    description="Optional list of video IDs to search. If not provided, searches all cached videos."
+                )
+            },
+            required=["target_sentence"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="extract_precise_word",
+        description="[PRECISE MODE] Phase 3-4: Extract a single word using Whisper. Downloads the sentence clip, runs Whisper for word-level timestamps, and cuts the exact word. Call once for each word in the plan.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "video_id": types.Schema(
+                    type=types.Type.STRING,
+                    description="YouTube video ID from the word plan"
+                ),
+                "target_word": types.Schema(
+                    type=types.Type.STRING,
+                    description="The specific word to extract"
+                ),
+                "sentence_start": types.Schema(
+                    type=types.Type.NUMBER,
+                    description="Start time of the sentence containing the word"
+                ),
+                "sentence_end": types.Schema(
+                    type=types.Type.NUMBER,
+                    description="End time of the sentence containing the word"
+                ),
+                "word_index": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Index of this word in the final sentence (0-based)"
+                )
+            },
+            required=["video_id", "target_word", "sentence_start", "sentence_end", "word_index"]
+        )
+    ),
+    types.FunctionDeclaration(
+        name="stitch_word_clips",
+        description="[PRECISE MODE] Phase 4, Step I: Stitch word clips together into the final video. Call after ALL words have been extracted.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "word_clips": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.OBJECT),
+                    description="List of results from extract_precise_word calls"
+                ),
+                "output_filename": types.Schema(
+                    type=types.Type.STRING,
+                    description="Optional output filename"
+                )
+            },
+            required=["word_clips"]
+        )
     )
 ]
 
@@ -465,6 +608,22 @@ TOOL_FUNCTIONS = {
         kwargs.get("video_id"),
         {"error": f"Transcript for {kwargs.get('video_id')} not found in cache"}
     ),
+    # Precise mode tools
+    "search_words_in_transcripts": lambda **kwargs: search_words_in_transcripts(
+        target_sentence=kwargs.get("target_sentence", ""),
+        video_ids=kwargs.get("video_ids")
+    ),
+    "extract_precise_word": lambda **kwargs: extract_precise_word(
+        video_id=kwargs.get("video_id"),
+        target_word=kwargs.get("target_word"),
+        sentence_start=kwargs.get("sentence_start", 0),
+        sentence_end=kwargs.get("sentence_end", 5),
+        word_index=kwargs.get("word_index", 0)
+    ),
+    "stitch_word_clips": lambda **kwargs: stitch_word_clips(
+        word_clips=kwargs.get("word_clips", []),
+        output_filename=kwargs.get("output_filename")
+    ),
 }
 
 # ============================================================================
@@ -474,6 +633,7 @@ TOOL_FUNCTIONS = {
 class ChatMessage(BaseModel):
     message: str
     history: list[dict] = []
+    mode: str = "creative"  # 'creative' or 'precise'
 
 class ToolCallRequest(BaseModel):
     tool_name: str
@@ -528,6 +688,13 @@ async def chat(request: ChatMessage):
         "suggested_clips": []
     }
     
+    # Select system prompt based on mode (log once, not every iteration)
+    if request.mode == "precise":
+        base_prompt = PRECISE_WORKFLOW_PROMPT
+        add_log(f"Chat request using Precise mode", "info")
+    else:
+        base_prompt = WORKFLOW_SYSTEM_PROMPT
+    
     # Process response - handle tool calls in a loop
     max_iterations = 10
     iteration = 0
@@ -536,8 +703,8 @@ async def chat(request: ChatMessage):
         iteration += 1
         
         try:
-            # Extended system instruction for interactive workflow with confirmations
-            extended_system_prompt = WORKFLOW_SYSTEM_PROMPT + """
+            # Extended system instruction for interactive workflow
+            extended_system_prompt = base_prompt + """
 
 VIDEO SCRIPT GUIDELINES - NATURAL CONVERSATION FLOW:
 
@@ -868,6 +1035,83 @@ async def verify_clip(request: VerifyClipRequest):
         "note": "Text from overlapping segments. 'fully_captured' indicates if entire segment falls within time range."
     }
 
+# ============================================================================
+# Server Logs API
+# ============================================================================
+
+@app.get("/api/logs")
+async def get_server_logs():
+    """Get recent server logs and progress state for frontend display"""
+    with LOG_LOCK:
+        logs = list(SERVER_LOGS)
+    
+    return {
+        "logs": logs,
+        "progress": PROGRESS_STATE
+    }
+
+@app.delete("/api/logs")
+async def clear_server_logs():
+    """Clear all server logs"""
+    with LOG_LOCK:
+        SERVER_LOGS.clear()
+    add_log("Logs cleared", "info")
+    return {"success": True}
+
+# ============================================================================
+# Precise Words API
+# ============================================================================
+
+@app.get("/api/precise-words")
+async def get_precise_words():
+    """Get all extracted word clips for the Precise Words tab"""
+    return {
+        "sentences": [
+            {
+                "sentence_id": sid,
+                "sentence": data["sentence"],
+                "words": {
+                    word: {
+                        "word_index": word_data.get("word_index", 0),
+                        "clips": [
+                            {
+                                "clip_index": clip.get("clip_index", 0),
+                                "video_id": clip.get("video_id", ""),
+                                "video_title": clip.get("video_title", ""),
+                                "file_path": clip.get("file_path", ""),
+                                # Convert to URL path for video preview
+                                "video_url": f"/videos/{os.path.basename(clip.get('file_path', ''))}" if clip.get("file_path") else "",
+                                "duration": clip.get("duration", 0),
+                                "confidence": clip.get("confidence", 0),
+                                "sentence_context": clip.get("sentence_context", "")
+                            }
+                            for clip in word_data.get("clips", [])
+                        ]
+                    }
+                    for word, word_data in data.get("words", {}).items()
+                }
+            }
+            for sid, data in PRECISE_WORD_CLIPS.items()
+        ]
+    }
+
+
+class PreciseCreateRequest(BaseModel):
+    sentence_id: str
+    selections: dict  # word -> clip_index
+
+
+@app.post("/api/precise-create")
+async def create_precise_video(request: PreciseCreateRequest):
+    """Stitch together user-selected clips"""
+    result = stitch_selected_clips(request.sentence_id, request.selections)
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+
 
 # ============================================================================
 # Helper Functions
@@ -876,10 +1120,25 @@ async def verify_clip(request: VerifyClipRequest):
 def execute_tool(tool_name: str, args: dict) -> Any:
     """Execute a tool by name with given arguments"""
     if tool_name not in TOOL_FUNCTIONS:
+        add_log(f"Unknown tool: {tool_name}", "error")
         raise ValueError(f"Unknown tool: {tool_name}")
     
+    # Log tool execution start
+    args_summary = str(args)[:100] + "..." if len(str(args)) > 100 else str(args)
+    add_log(f"[{tool_name}] Starting with args: {args_summary}", "info")
+    
     func = TOOL_FUNCTIONS[tool_name]
-    return func(**args)
+    try:
+        result = func(**args)
+        
+        # Log success with result summary
+        result_summary = str(result)[:150] + "..." if len(str(result)) > 150 else str(result)
+        add_log(f"[{tool_name}] ✅ Success: {result_summary}", "success")
+        
+        return result
+    except Exception as e:
+        add_log(f"[{tool_name}] ❌ Error: {str(e)}", "error")
+        raise
 
 
 def parse_suggested_clips(text: str) -> list[dict]:

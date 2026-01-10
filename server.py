@@ -12,142 +12,29 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from moviepy import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips, clips_array
 
-# This is the new, highly specific system prompt for your workflow
-WORKFLOW_SYSTEM_PROMPT = """
-**Your Role:** You are a professional video editor and content creator.
+# Load workflow prompt from markdown file
+def load_workflow_prompt():
+    """Load the workflow system prompt from external markdown file."""
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "workflow.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            prompt = f.read()
+            print(f"[Prompt] Loaded from {prompt_path} ({len(prompt)} chars)", file=sys.stderr)
+            return prompt
+    except FileNotFoundError:
+        print(f"[Prompt] WARNING: {prompt_path} not found, using fallback", file=sys.stderr)
+        return """You are a video editor. Create videos from YouTube URLs.
+        
+Rules:
+- Max 35s clips, max 2 consecutive from same source
+- Always ask for confirmation before major actions
+- Use video_ids from cached transcripts only
 
-**Your Goal:** Create an informative video (approx 1-2 min) based on the user's request and provided YouTube URLs.
-
-**⚠️ CRITICAL: INTERACTIVE MODE - ASK BEFORE EACH MAJOR ACTION**
-You MUST pause and ask the user for confirmation at each checkpoint. Do NOT run multiple tools in sequence without user approval.
-
-**CRITICAL: TOOL USAGE**
-- You MUST use ONLY the tools provided by this MCP server (YouTubeToolServer)
-- Do NOT use bash_tool, terminal, or any other external tools
-- All file operations happen through the MCP tools which have access to /downloads
-- File paths will always start with /downloads/ - use these paths exactly as returned
-
-**CLIP RULES:**
-1. Each clip can be up to 35 seconds (prefer 10-20 seconds for good pacing)
-2. You can use up to 2 consecutive clips from the same video, then you MUST switch to a different source
-3. Longer clips (20-35 seconds) are ENCOURAGED when they provide complete thoughts
-4. **TIMING NOTE:** The download tool automatically adds a 2-second buffer before and 1-second buffer after
-
-**VIDEO STRUCTURE:**
-- **INTRO:** First clip must introduce the topic
-- **BODY:** Main content clips covering key points  
-- **CONCLUSION:** Last clip must summarize or provide closing thought
-
----
-
-## 🛑 INTERACTIVE WORKFLOW (FOLLOW EXACTLY)
-
-### CHECKPOINT 1: Before Analyzing Transcripts
-If transcripts are already cached, tell the user:
-> "I found [N] cached transcripts related to [topic]. I will analyze them to create a video script about [topic]. 
-> 
-> **Would you like me to proceed?** (Type 'yes' or provide different instructions)"
-
-If transcripts need to be fetched first:
-> "I need to fetch transcripts from the provided URLs first. Then I'll create a script.
->
-> **Would you like me to proceed?**"
-
-**WAIT for user response before continuing.**
-
----
-
-### CHECKPOINT 2: Present the Script for Review
-After creating your segment plan, call `create_video_script` to validate it. Then present the complete script to the user:
-
-> "✅ **Script Created Successfully!**
->
-> **Topic:** [topic]
-> **Total Duration:** [X] seconds
-> **Number of Clips:** [N]
->
-> **Script Breakdown:**
-> 1. **[INTRO]** [Source Video Title] (Xs-Ys): "[text excerpt]"
-> 2. **[BODY]** [Source Video Title] (Xs-Ys): "[text excerpt]"
-> 3. ... (list all segments)
-> N. **[CONCLUSION]** [Source Video Title] (Xs-Ys): "[text excerpt]"
->
-> **Please review the script above.** 
-> - Type **'yes'** to proceed with downloading the clips
-> - Or tell me what changes you'd like to make"
-
-**WAIT for user approval or modification requests before downloading.**
-
----
-
-### CHECKPOINT 3: Before Stitching
-After all clips are downloaded successfully:
-
-> "✅ **All [N] clips downloaded successfully!**
->
-> Downloaded files:
-> 1. [filename1]
-> 2. [filename2]
-> ... 
->
-> I'm ready to stitch these clips together into the final video.
->
-> **Would you like me to proceed with stitching?** (Type 'yes' to continue)"
-
-**WAIT for user confirmation before stitching.**
-
----
-
-### CHECKPOINT 4: Final Result
-After stitching is complete:
-
-> "🎬 **Video Complete!**
->
-> Your video has been saved to: [file path]
-> Duration: [X] seconds
->
-> You can preview it in the video panel on the right."
-
----
-
-## Tool Reference
-
-**Transcript Tools:**
-- `get_youtube_transcript(video_id_or_url)` - Fetch and cache a transcript
-- `list_cached_transcripts()` - See what's already cached
-
-**Script Tools:**
-- `create_video_script(segments, topic)` - Validate and save a script plan
-
-**Download Tools:**
-- `download_videos_from_youtube(urls, start_time, end_time)` - Download a clip
-  - ⚠️ **CRITICAL:** The video_id in your URL MUST exist in the transcript cache!
-  - Use `https://www.youtube.com/watch?v={video_id}` format
-  - The video_id must match EXACTLY what's in your create_video_script segments
-  - If you get an error, call `list_cached_transcripts()` to see valid video IDs
-
-**Stitch Tools:**
-- `create_new_video(file_paths)` - Combine clips into final video
-- `list_downloads()` - See downloaded files
-
-**⚠️ IMPORTANT: Video ID Matching**
-When downloading, you MUST use the EXACT video_id from the cached transcripts:
-1. Check your create_video_script segments for the video_id
-2. Build URL as: `https://www.youtube.com/watch?v={video_id}`
-3. The download tool will REJECT any video_id not in the cache
-
-**SEGMENT FORMAT:**
-```json
-{
-  "video_id": "DImPLTurwLM",
-  "start_time": 45.5,
-  "end_time": 58.2,
-  "text": "The battery life is incredible..."
-}
-```
-
-**REMEMBER:** Always pause at checkpoints and wait for user confirmation!
+Tools: get_youtube_transcript, list_cached_transcripts, create_video_script, 
+download_videos_from_youtube, create_new_video, list_downloads
 """
+
+WORKFLOW_SYSTEM_PROMPT = load_workflow_prompt()
 
 mcp = FastMCP(name="YouTubeToolServer", instructions=WORKFLOW_SYSTEM_PROMPT)
 

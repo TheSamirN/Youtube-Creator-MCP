@@ -11,10 +11,11 @@ const state = {
     conversationHistory: [],
     transcripts: {},  // Store fetched YouTube transcripts by video_id
     generatedTranscripts: {},  // Store AI-generated transcripts by script_id
+    preciseWords: {},  // Store precise word clips by sentence_id
     currentVideoId: null,
     tools: [],
     isLoading: false,
-    activeTab: 'fetched',  // 'fetched' or 'generated'
+    activeTab: 'fetched',  // 'fetched', 'generated', or 'precise'
     // Mode: 'creative' or 'precise'
     mode: 'creative',
     // Playback state
@@ -56,10 +57,16 @@ const elements = {
     // Tab elements
     tabFetched: document.getElementById('tab-fetched'),
     tabGenerated: document.getElementById('tab-generated'),
+    tabPrecise: document.getElementById('tab-precise'),
     // Playback elements
     playTranscriptBtn: document.getElementById('play-transcript-btn'),
     stopTranscriptBtn: document.getElementById('stop-transcript-btn'),
     playbackStatus: document.getElementById('playback-status'),
+    // Search elements
+    transcriptSearchInput: document.getElementById('transcript-search-input'),
+    transcriptSearchBtn: document.getElementById('transcript-search-btn'),
+    searchResultsCount: document.getElementById('search-results-count'),
+    transcriptSearchControls: document.getElementById('transcript-search-controls'),
     // Export elements
     exportLogsBtn: document.getElementById('export-logs-btn'),
     // Server logs elements
@@ -70,7 +77,14 @@ const elements = {
     progressPercent: document.getElementById('progress-percent'),
     refreshStatus: document.getElementById('refresh-status'),
     toggleRefreshBtn: document.getElementById('toggle-refresh-btn'),
-    clearLogsBtn: document.getElementById('clear-logs-btn')
+    clearLogsBtn: document.getElementById('clear-logs-btn'),
+    // Precise mode elements
+    preciseSentenceSelector: document.getElementById('precise-sentence-selector'),
+    preciseWordsGrid: document.getElementById('precise-words-grid'),
+    preciseWordsContainer: document.getElementById('precise-words-container'),
+    createPreciseVideoBtn: document.getElementById('create-precise-video-btn'),
+    transcriptControls: document.getElementById('transcript-controls'),
+    playbackControls: document.getElementById('playback-controls')
 };
 
 // ============================================================================
@@ -121,6 +135,17 @@ function setupEventListeners() {
     // Tab switching
     elements.tabFetched.addEventListener('click', () => switchTab('fetched'));
     elements.tabGenerated.addEventListener('click', () => switchTab('generated'));
+    if (elements.tabPrecise) {
+        elements.tabPrecise.addEventListener('click', () => switchTab('precise'));
+    }
+
+    // Precise mode event listeners
+    if (elements.preciseSentenceSelector) {
+        elements.preciseSentenceSelector.addEventListener('change', renderPreciseWords);
+    }
+    if (elements.createPreciseVideoBtn) {
+        elements.createPreciseVideoBtn.addEventListener('click', createPreciseVideo);
+    }
 
     // Playback controls
     elements.playTranscriptBtn.addEventListener('click', startPlayback);
@@ -135,6 +160,16 @@ function setupEventListeners() {
     }
     if (elements.clearLogsBtn) {
         elements.clearLogsBtn.addEventListener('click', clearServerLogs);
+    }
+
+    // Transcript search
+    if (elements.transcriptSearchBtn) {
+        elements.transcriptSearchBtn.addEventListener('click', searchInTranscript);
+    }
+    if (elements.transcriptSearchInput) {
+        elements.transcriptSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') searchInTranscript();
+        });
     }
 
     // Mode toggle
@@ -595,6 +630,85 @@ function stopPlayback() {
         el.classList.remove('playing');
     });
 }
+
+// Search within the currently displayed transcript
+// Search state for navigation
+let searchMatches = [];
+let currentSearchIndex = 0;
+
+function searchInTranscript() {
+    const query = elements.transcriptSearchInput?.value?.trim().toLowerCase();
+
+    // Clear previous matches
+    document.querySelectorAll('.transcript-segment.search-match').forEach(el => {
+        el.classList.remove('search-match');
+        el.classList.remove('search-current');
+    });
+    searchMatches = [];
+    currentSearchIndex = 0;
+
+    if (!query) {
+        elements.searchResultsCount.textContent = '';
+        updateSearchNavButtons();
+        return;
+    }
+
+    // Use word boundary regex for whole word matching
+    const wordPattern = new RegExp(`\\b${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+
+    // Find all matching segments
+    const segments = document.querySelectorAll('.transcript-segment');
+
+    segments.forEach(segment => {
+        const text = segment.textContent;
+        if (wordPattern.test(text)) {
+            segment.classList.add('search-match');
+            searchMatches.push(segment);
+        }
+    });
+
+    // Update result count
+    if (searchMatches.length > 0) {
+        elements.searchResultsCount.textContent = `1/${searchMatches.length}`;
+        highlightCurrentMatch();
+    } else {
+        elements.searchResultsCount.textContent = 'No matches';
+    }
+
+    updateSearchNavButtons();
+}
+
+function highlightCurrentMatch() {
+    // Remove current highlight
+    document.querySelectorAll('.transcript-segment.search-current').forEach(el => {
+        el.classList.remove('search-current');
+    });
+
+    if (searchMatches.length > 0 && searchMatches[currentSearchIndex]) {
+        searchMatches[currentSearchIndex].classList.add('search-current');
+        searchMatches[currentSearchIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        elements.searchResultsCount.textContent = `${currentSearchIndex + 1}/${searchMatches.length}`;
+    }
+}
+
+function updateSearchNavButtons() {
+    const prevBtn = document.getElementById('search-prev-btn');
+    const nextBtn = document.getElementById('search-next-btn');
+    if (prevBtn) prevBtn.disabled = searchMatches.length <= 1;
+    if (nextBtn) nextBtn.disabled = searchMatches.length <= 1;
+}
+
+window.searchPrev = function () {
+    if (searchMatches.length === 0) return;
+    currentSearchIndex = (currentSearchIndex - 1 + searchMatches.length) % searchMatches.length;
+    highlightCurrentMatch();
+};
+
+window.searchNext = function () {
+    if (searchMatches.length === 0) return;
+    currentSearchIndex = (currentSearchIndex + 1) % searchMatches.length;
+    highlightCurrentMatch();
+};
 
 function playSegment(index) {
     if (!state.isPlaying || index >= state.currentSegments.length) {
@@ -1565,10 +1679,13 @@ function renderPreciseWords() {
         }
 
         return `
-            <div class="word-card">
-                <div class="word-card-header">
+            <div class="word-card collapsed" data-word="${wordData.word}">
+                <div class="word-card-header" onclick="toggleWordCard(this)">
                     <span class="word-index">${wordData.word_index + 1}</span>
+                    ${wordData.is_phrase ? '<span class="phrase-badge">🔗</span>' : ''}
                     <span class="word-text">${wordData.word}</span>
+                    <span class="clip-count">${clips.length} clips</span>
+                    <span class="expand-indicator">▶</span>
                 </div>
                 <div class="word-clips">
                     ${clipsHtml}
@@ -1588,6 +1705,12 @@ window.selectClip = function (element, radioName) {
     element.classList.add('selected');
     const radio = element.querySelector('input[type="radio"]');
     radio.checked = true;
+};
+
+// Toggle word card expand/collapse
+window.toggleWordCard = function (header) {
+    const card = header.closest('.word-card');
+    card.classList.toggle('collapsed');
 };
 
 async function createPreciseVideo() {

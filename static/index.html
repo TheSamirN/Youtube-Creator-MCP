@@ -124,6 +124,17 @@
                                 Stop</button>
                             <span id="playback-status" class="playback-status">Ready</span>
                         </div>
+                        <!-- Search in transcript -->
+                        <div class="transcript-search-controls" id="transcript-search-controls">
+                            <input type="text" id="transcript-search-input" class="transcript-search-input"
+                                placeholder="Search in transcript..." />
+                            <button class="btn-search" id="transcript-search-btn" title="Search">🔍</button>
+                            <button class="btn-nav" id="search-prev-btn" onclick="searchPrev()" title="Previous"
+                                disabled>▲</button>
+                            <button class="btn-nav" id="search-next-btn" onclick="searchNext()" title="Next"
+                                disabled>▼</button>
+                            <span id="search-results-count" class="search-results-count"></span>
+                        </div>
                         <!-- Regular transcript container -->
                         <div class="transcript-container" id="transcript-container">
                             <div class="empty-state">

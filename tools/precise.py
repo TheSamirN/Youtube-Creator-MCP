@@ -25,6 +25,7 @@ from tools.shared import (
     add_server_log,
     update_progress,
     clear_progress,
+    save_precise_word_clips,
 )
 
 # Confidence threshold for accepting a word
@@ -319,32 +320,71 @@ def extract_precise_word(
     # === Step G: Parse JSON to find exact word timing with HIGH CONFIDENCE ===
     add_server_log(f"[Precise] Step G: Finding exact timing for '{target_word}' (confidence >= {MIN_CONFIDENCE})...", "info")
     
-    target_lower = target_word.lower().strip()
+    # Handle PHRASES (multi-word targets) vs single words
+    target_parts = target_word.lower().strip().split()
+    is_phrase = len(target_parts) > 1
+    
     best_match = None
     
+    # Flatten all words from all segments with their timings
+    all_words = []
     for segment in whisper_result.get("segments", []):
         for w in segment.get("words", []):
-            w_text = w.get("text", "").lower().strip().strip(".,!?\"'")
-            w_confidence = w.get("confidence", 0)
+            all_words.append({
+                "text": w.get("text", "").lower().strip().strip(".,!?\"'"),
+                "start": w.get("start", 0),
+                "end": w.get("end", 0),
+                "confidence": w.get("confidence", 0)
+            })
+    
+    if is_phrase:
+        # PHRASE MATCHING: Find consecutive words matching the phrase
+        add_server_log(f"[Precise] Looking for phrase: {target_parts}", "info")
+        
+        for i in range(len(all_words) - len(target_parts) + 1):
+            # Check if consecutive words match the phrase
+            match = True
+            min_confidence = 1.0
             
-            if w_text == target_lower:
-                # Track best match by confidence
-                if best_match is None or w_confidence > best_match["confidence"]:
+            for j, part in enumerate(target_parts):
+                if all_words[i + j]["text"] != part:
+                    match = False
+                    break
+                min_confidence = min(min_confidence, all_words[i + j]["confidence"])
+            
+            if match:
+                phrase_start = all_words[i]["start"]
+                phrase_end = all_words[i + len(target_parts) - 1]["end"]
+                
+                if best_match is None or min_confidence > best_match["confidence"]:
                     best_match = {
-                        "start": w.get("start", 0),
-                        "end": w.get("end", 0),
-                        "confidence": w_confidence
+                        "start": phrase_start,
+                        "end": phrase_end,
+                        "confidence": min_confidence
+                    }
+                    add_server_log(f"[Precise] 🔗 Found phrase at {phrase_start:.3f}s - {phrase_end:.3f}s (conf: {min_confidence:.2f})", "info")
+    else:
+        # SINGLE WORD MATCHING
+        target_lower = target_parts[0]
+        
+        for w in all_words:
+            if w["text"] == target_lower:
+                if best_match is None or w["confidence"] > best_match["confidence"]:
+                    best_match = {
+                        "start": w["start"],
+                        "end": w["end"],
+                        "confidence": w["confidence"]
                     }
     
     if best_match is None:
-        add_server_log(f"[Precise] ❌ Word '{target_word}' not found in Whisper output", "error")
+        add_server_log(f"[Precise] ❌ {'Phrase' if is_phrase else 'Word'} '{target_word}' not found in Whisper output", "error")
         # Cleanup
         try:
             os.remove(sentence_video_path)
             os.remove(audio_path)
         except:
             pass
-        return {"error": f"Word '{target_word}' not found in Whisper transcription"}
+        return {"error": f"{'Phrase' if is_phrase else 'Word'} '{target_word}' not found in Whisper transcription"}
     
     word_start = best_match["start"]
     word_end = best_match["end"]
@@ -368,14 +408,28 @@ def extract_precise_word(
     final_start = max(0, word_start)
     final_end = min(sentence_duration, word_end)
     
-    final_path = os.path.join(downloads_dir, f"word_{word_index:02d}_{target_word}_{video_id}.mp4")
+    # Add small buffer at end for clarity (user requested)
+    end_buffer = 0.1  # 100ms buffer at end
+    final_end = min(sentence_duration, final_end + end_buffer)
+    
+    # Unique filename: include timestamp to avoid overwriting
+    import time
+    timestamp = int(time.time() * 1000) % 100000  # Last 5 digits of ms timestamp
+    safe_word = target_word.replace(" ", "_").replace("'", "")[:20]  # Sanitize for filename
+    final_path = os.path.join(downloads_dir, f"word_{word_index:02d}_{safe_word}_{video_id}_{timestamp}.mp4")
     
     try:
         with contextlib.redirect_stdout(sys.stderr), contextlib.redirect_stderr(sys.stderr):
+            from moviepy import VideoFileClip, vfx
             video_clip = VideoFileClip(sentence_video_path)
             word_clip = video_clip.subclipped(final_start, final_end)
-            word_clip.write_videofile(final_path, codec='libx264', audio_codec='aac', logger=None)
-            final_duration = word_clip.duration
+            
+            # Slow down slightly for clarity (0.9x speed = slightly slower)
+            slowed_clip = word_clip.with_effects([vfx.MultiplySpeed(0.9)])
+            
+            slowed_clip.write_videofile(final_path, codec='libx264', audio_codec='aac', logger=None)
+            final_duration = slowed_clip.duration
+            slowed_clip.close()
             word_clip.close()
             video_clip.close()
     except Exception as e:
@@ -567,8 +621,13 @@ def extract_word_options(
     # Generate sentence ID
     sentence_id = hashlib.md5(target_sentence.encode()).hexdigest()[:8]
     
-    # First, search for all word occurrences (not just first)
-    words = [w.strip() for w in target_sentence.split() if w.strip()]
+    # Parse words and strip punctuation to match transcript word extraction
+    # Transcript uses: re.findall(r'\b\w+\b', text) which only gets alphanumeric
+    import string
+    raw_words = [w.strip() for w in target_sentence.split() if w.strip()]
+    words = [w.strip(string.punctuation) for w in raw_words]  # Strip punctuation
+    words = [w for w in words if w]  # Remove empty strings
+    
     if not words:
         return {"error": "No words found in target sentence"}
     
@@ -576,6 +635,8 @@ def extract_word_options(
     
     if not search_ids:
         return {"error": "No transcripts available"}
+    
+    add_server_log(f"[Precise] Searching {len(search_ids)} transcripts: {search_ids}", "info")
     
     # Build word occurrence index
     word_occurrences = {}
@@ -611,25 +672,141 @@ def extract_word_options(
         "words": {}
     }
     
+    # === NEW: Build PHRASE occurrence index (bigrams) ===
+    phrase_occurrences = {}
+    for video_id in search_ids:
+        if video_id not in TRANSCRIPT_CACHE:
+            continue
+        transcript = TRANSCRIPT_CACHE[video_id]
+        segments = transcript.get("segments", [])
+        
+        for seg_idx, segment in enumerate(segments):
+            text = segment.get("text", "").lower()
+            start = segment.get("start", 0)
+            end = segment.get("end", 0)
+            
+            # Check for each possible phrase (bigram)
+            for i in range(len(words) - 1):
+                phrase = f"{words[i].lower()} {words[i+1].lower()}"
+                if phrase in text:
+                    if phrase not in phrase_occurrences:
+                        phrase_occurrences[phrase] = []
+                    phrase_occurrences[phrase].append({
+                        "video_id": video_id,
+                        "segment_index": seg_idx,
+                        "sentence_start": start,
+                        "sentence_end": end,
+                        "sentence_text": segment.get("text", "").strip(),
+                        "video_title": transcript.get("title", video_id),
+                        "covers_words": [i, i+1]  # Which word indices this phrase covers
+                    })
+    
+    add_server_log(f"[Precise] Found {len(phrase_occurrences)} phrase patterns: {list(phrase_occurrences.keys())}", "info")
+    
     total_words = len(words)
     total_clips = 0
+    last_used_video = None  # Track for video rotation
+    processed_indices = set()  # Track which word indices have been processed (for phrases)
     
-    # Extract clips for each word
+    # === First pass: Try to find PHRASES (word pairs) ===
+    for phrase, phrase_occs in phrase_occurrences.items():
+        if not phrase_occs:
+            continue
+            
+        # Get word indices this phrase covers
+        covers = phrase_occs[0]["covers_words"]
+        
+        # Skip if any covered word is already processed
+        if any(idx in processed_indices for idx in covers):
+            continue
+        
+        # Sort occurrences to prioritize different videos (video rotation)
+        sorted_occs = sorted(
+            phrase_occs,
+            key=lambda x: (x["video_id"] == last_used_video, x["video_id"])
+        )
+        
+        phrase_words = phrase.split()
+        phrase_key = " ".join([words[i] for i in covers])  # Use original case
+        
+        add_server_log(f"[Precise] 🔗 Found phrase '{phrase_key}' - extracting as single clip", "info")
+        
+        clips_for_phrase = []
+        for occ in sorted_occs[:max_options]:
+            total_clips += 1
+            
+            # Extract the phrase as a single clip
+            clip_result = extract_precise_word(
+                video_id=occ["video_id"],
+                target_word=phrase_key,  # Pass the phrase
+                sentence_start=occ["sentence_start"],
+                sentence_end=occ["sentence_end"],
+                word_index=covers[0] * 100  # Use first word index
+            )
+            
+            if clip_result.get("success"):
+                clips_for_phrase.append({
+                    "clip_index": len(clips_for_phrase),
+                    "video_id": occ["video_id"],
+                    "video_title": occ["video_title"],
+                    "file_path": clip_result["file_path"],
+                    "duration": clip_result["duration"],
+                    "confidence": clip_result["confidence"],
+                    "sentence_context": occ["sentence_text"][:100],
+                    "is_phrase": True
+                })
+                last_used_video = occ["video_id"]
+                add_server_log(f"[Precise] ✅ Phrase clip from {occ['video_id']}", "success")
+        
+        if clips_for_phrase:
+            result["words"][phrase_key] = {
+                "word_index": covers[0],
+                "clips": clips_for_phrase,
+                "is_phrase": True,
+                "covers_indices": covers
+            }
+            processed_indices.update(covers)
+    
+    # === Second pass: Extract individual words (that weren't covered by phrases) ===
     for word_idx, target_word in enumerate(words):
+        # Skip if already covered by a phrase
+        if word_idx in processed_indices:
+            continue
+            
         word_lower = target_word.lower()
         
         if word_lower not in word_occurrences:
-            add_server_log(f"[Precise] ❌ Word '{target_word}' not found", "warning")
-            result["words"][target_word] = {"error": "Word not found", "clips": []}
-            continue
+            add_server_log(f"[Precise] ❌ Word '{target_word}' not found in any transcript - STOPPING", "error")
+            clear_progress()
+            return {
+                "error": f"Word '{target_word}' not found in any cached transcript. Please use different words or cache more videos.",
+                "missing_word": target_word,
+                "sentence": target_sentence
+            }
         
-        occurrences = word_occurrences[word_lower]
+        # Sort occurrences to prioritize DIFFERENT videos (video rotation)
+        sorted_occurrences = sorted(
+            word_occurrences[word_lower],
+            key=lambda x: (x["video_id"] == last_used_video, x["video_id"])
+        )
+        
         clips_for_word = []
         used_segments = set()
+        attempts = 0
+        max_attempts = len(sorted_occurrences)
         
-        # Extract up to max_options clips
-        for occ in occurrences:
+        add_server_log(f"[Precise] Looking for {max_options} clips of '{target_word}' ({len(sorted_occurrences)} occurrences, rotating videos)", "info")
+        
+        # Keep trying until we have max_options successful clips OR run out of occurrences
+        for occ in sorted_occurrences:
+            # Stop if we have enough successful clips
             if len(clips_for_word) >= max_options:
+                break
+            
+            # Stop if we've tried too many
+            attempts += 1
+            if attempts > max_attempts:
+                add_server_log(f"[Precise] ⚠️ Exhausted all {max_attempts} occurrences for '{target_word}', got {len(clips_for_word)} clips", "warning")
                 break
             
             segment_key = (occ["video_id"], occ["segment_index"])
@@ -641,7 +818,7 @@ def extract_word_options(
             total_clips += 1
             
             update_progress(
-                f"Extracting '{target_word}' clip {clip_idx + 1}/{max_options}",
+                f"Extracting '{target_word}' clip {clip_idx + 1}/{max_options} from {occ['video_id'][:6]}...",
                 total_clips,
                 total_words * max_options
             )
@@ -665,15 +842,19 @@ def extract_word_options(
                     "confidence": clip_result["confidence"],
                     "sentence_context": occ["sentence_text"][:100]
                 })
+                last_used_video = occ["video_id"]  # Update for rotation
                 add_server_log(
-                    f"[Precise] ✅ Clip {clip_idx + 1} for '{target_word}' from {occ['video_id']}",
+                    f"[Precise] ✅ Clip {len(clips_for_word)}/{max_options} for '{target_word}' from {occ['video_id']}",
                     "success"
                 )
             else:
                 add_server_log(
-                    f"[Precise] ⚠️ Failed clip for '{target_word}': {clip_result.get('error')}",
+                    f"[Precise] ⚠️ Failed clip for '{target_word}' from {occ['video_id']}: {clip_result.get('error')} - trying next",
                     "warning"
                 )
+        
+        if len(clips_for_word) < max_options:
+            add_server_log(f"[Precise] ⚠️ Only got {len(clips_for_word)}/{max_options} clips for '{target_word}'", "warning")
         
         result["words"][target_word] = {
             "word_index": word_idx,
@@ -684,6 +865,9 @@ def extract_word_options(
     
     # Store in cache for UI access
     PRECISE_WORD_CLIPS[sentence_id] = result
+    
+    # Persist cache to disk
+    save_precise_word_clips()
     
     add_server_log(f"[Precise] ✅ Extracted clips stored with ID: {sentence_id}", "success")
     
@@ -715,28 +899,38 @@ def stitch_selected_clips(sentence_id: str, selections: dict) -> dict:
     downloads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "downloads")
     
     # Build ordered list of clips based on selections
+    # IMPORTANT: Iterate through words_data sorted by word_index, NOT sentence.split()
+    # This handles phrases (like "iPhone 17") which are stored as single keys
     clips_to_stitch = []
-    words = sentence.split()
     
-    for word_idx, word in enumerate(words):
-        if word not in words_data:
-            add_server_log(f"[Precise] ⚠️ No clips for word '{word}'", "warning")
-            continue
+    sorted_word_keys = sorted(
+        words_data.keys(),
+        key=lambda w: words_data[w].get("word_index", 0)
+    )
+    
+    add_server_log(f"[Precise] Processing {len(sorted_word_keys)} word/phrase entries: {sorted_word_keys}", "info")
+    
+    for word_key in sorted_word_keys:
+        word_entry = words_data[word_key]
+        word_clips = word_entry.get("clips", [])
         
-        word_clips = words_data[word].get("clips", [])
         if not word_clips:
-            add_server_log(f"[Precise] ⚠️ No clips available for '{word}'", "warning")
+            add_server_log(f"[Precise] ⚠️ No clips available for '{word_key}'", "warning")
             continue
         
         # Get selected clip index (default to first)
-        selected_idx = selections.get(word, 0)
+        selected_idx = selections.get(word_key, 0)
         if selected_idx >= len(word_clips):
             selected_idx = 0
         
         selected_clip = word_clips[selected_idx]
+        is_phrase = word_entry.get("is_phrase", False)
+        
+        add_server_log(f"[Precise] Adding {'phrase' if is_phrase else 'word'} '{word_key}' clip {selected_idx}", "info")
+        
         clips_to_stitch.append({
-            "word_index": word_idx,
-            "target_word": word,
+            "word_index": word_entry.get("word_index", 0),
+            "target_word": word_key,
             "file_path": selected_clip["file_path"],
             "video_id": selected_clip["video_id"]
         })

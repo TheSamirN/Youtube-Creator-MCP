@@ -424,6 +424,29 @@ TOOL_DECLARATIONS = [
             },
             required=["word_clips"]
         )
+    ),
+    types.FunctionDeclaration(
+        name="extract_word_options",
+        description="[PRECISE MODE] Extract 3 clip options for EACH word in a sentence. Downloads and extracts multiple clips per word so the user can select their preferred option in the UI. Use this when the user wants to choose between clip options.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "target_sentence": types.Schema(
+                    type=types.Type.STRING,
+                    description="The sentence to construct (e.g., 'iPhone 17 is the Pro')"
+                ),
+                "max_options": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Maximum number of clip options per word (default: 3)"
+                ),
+                "video_ids": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                    description="Optional list of video IDs to search. If not provided, searches all cached videos."
+                )
+            },
+            required=["target_sentence"]
+        )
     )
 ]
 
@@ -624,6 +647,11 @@ TOOL_FUNCTIONS = {
         word_clips=kwargs.get("word_clips", []),
         output_filename=kwargs.get("output_filename")
     ),
+    "extract_word_options": lambda **kwargs: extract_word_options(
+        target_sentence=kwargs.get("target_sentence", ""),
+        max_options=kwargs.get("max_options", 3),
+        video_ids=kwargs.get("video_ids")
+    ),
 }
 
 # ============================================================================
@@ -638,6 +666,10 @@ class ChatMessage(BaseModel):
 class ToolCallRequest(BaseModel):
     tool_name: str
     args: dict = {}
+
+class StitchPreciseRequest(BaseModel):
+    sentence_id: str
+    selections: dict = {}  # Maps word -> selected clip_index
 
 # ============================================================================
 # API Endpoints
@@ -981,6 +1013,58 @@ async def delete_generated_transcript(script_id: str):
 
 
 # ============================================================================
+# Precise Word Clips API
+# ============================================================================
+
+@app.get("/api/precise-words")
+async def get_precise_words():
+    """Get all extracted word clips for the Precise Words tab"""
+    return {
+        "sentences": [
+            {
+                "sentence_id": sid,
+                "sentence": data.get("sentence", ""),
+                "words": {
+                    word: {
+                        "word_index": word_data.get("word_index", 0),
+                        "clips": [
+                            {
+                                "clip_index": clip.get("clip_index", 0),
+                                "video_id": clip.get("video_id", ""),
+                                "video_title": clip.get("video_title", ""),
+                                "file_path": clip.get("file_path", ""),
+                                "video_url": f"/videos/{os.path.basename(clip.get('file_path', ''))}" if clip.get("file_path") else "",
+                                "duration": clip.get("duration", 0),
+                                "confidence": clip.get("confidence", 0),
+                                "sentence_context": clip.get("sentence_context", "")
+                            }
+                            for clip in word_data.get("clips", [])
+                        ]
+                    }
+                    for word, word_data in data.get("words", {}).items()
+                }
+            }
+            for sid, data in PRECISE_WORD_CLIPS.items()
+        ]
+    }
+
+
+class PreciseCreateRequest(BaseModel):
+    sentence_id: str
+    selections: dict
+
+
+@app.post("/api/precise-create")
+async def create_precise_video(request: PreciseCreateRequest):
+    """Stitch together user-selected clips"""
+    result = stitch_selected_clips(request.sentence_id, request.selections)
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+# ============================================================================
 # Clip Verification API
 # ============================================================================
 
@@ -1034,6 +1118,42 @@ async def verify_clip(request: VerifyClipRequest):
         "segment_count": len(overlapping_segments),
         "note": "Text from overlapping segments. 'fully_captured' indicates if entire segment falls within time range."
     }
+
+# ============================================================================
+# Precise Word Clips API
+# ============================================================================
+
+@app.get("/api/precise-words")
+async def get_precise_words():
+    """Get all cached precise word clips for UI display"""
+    return {"sentences": PRECISE_WORD_CLIPS}
+
+
+@app.get("/api/precise-words/{sentence_id}")
+async def get_precise_words_by_id(sentence_id: str):
+    """Get word clips for a specific sentence"""
+    if sentence_id in PRECISE_WORD_CLIPS:
+        return PRECISE_WORD_CLIPS[sentence_id]
+    raise HTTPException(status_code=404, detail=f"Sentence '{sentence_id}' not found")
+
+
+@app.post("/api/precise-words/stitch")
+async def stitch_precise_words(request: StitchPreciseRequest):
+    """Stitch together user-selected clips from the UI"""
+    add_log(f"Stitching clips for sentence: {request.sentence_id}", "info")
+    
+    try:
+        result = stitch_selected_clips(request.sentence_id, request.selections)
+        
+        if result.get("error"):
+            add_log(f"Stitch failed: {result['error']}", "error")
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        add_log(f"Stitch complete: {result.get('file_path', 'unknown')}", "success")
+        return result
+    except Exception as e:
+        add_log(f"Stitch error: {str(e)}", "error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # Server Logs API

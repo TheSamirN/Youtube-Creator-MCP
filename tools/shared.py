@@ -28,6 +28,7 @@ PRECISE_WORD_CLIPS: dict[str, dict] = {}
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "downloads", "transcript_cache.json")
 GENERATED_CACHE_FILE = os.path.join(BASE_DIR, "downloads", "generated_transcript_cache.json")
+PRECISE_CACHE_FILE = os.path.join(BASE_DIR, "downloads", "precise_word_clips.json")
 
 
 def save_transcript_cache():
@@ -76,6 +77,30 @@ def load_generated_transcript_cache():
         except Exception as e:
             print(f"[Cache] Failed to load generated cache: {e}", file=sys.stderr)
             GENERATED_TRANSCRIPT_CACHE = {}
+
+
+def save_precise_word_clips():
+    """Save the precise word clips cache to a JSON file for persistence across restarts."""
+    try:
+        os.makedirs(os.path.dirname(PRECISE_CACHE_FILE), exist_ok=True)
+        with open(PRECISE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(PRECISE_WORD_CLIPS, f, indent=2, ensure_ascii=False)
+        print(f"[Cache] Saved {len(PRECISE_WORD_CLIPS)} precise word clips to {PRECISE_CACHE_FILE}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Cache] Failed to save precise word clips cache: {e}", file=sys.stderr)
+
+
+def load_precise_word_clips():
+    """Load the precise word clips cache from disk if it exists."""
+    global PRECISE_WORD_CLIPS
+    if os.path.exists(PRECISE_CACHE_FILE):
+        try:
+            with open(PRECISE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                PRECISE_WORD_CLIPS = json.load(f)
+            print(f"[Cache] Loaded {len(PRECISE_WORD_CLIPS)} precise word clips from disk", file=sys.stderr)
+        except Exception as e:
+            print(f"[Cache] Failed to load precise word clips cache: {e}", file=sys.stderr)
+            PRECISE_WORD_CLIPS = {}
 
 
 # ============================================================================
@@ -176,3 +201,4 @@ def clear_server_logs():
 # Load caches on module import
 load_transcript_cache()
 load_generated_transcript_cache()
+load_precise_word_clips()

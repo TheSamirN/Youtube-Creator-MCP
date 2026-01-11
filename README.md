@@ -42,7 +42,7 @@ In Precise Mode, you have surgical control. The AI finds individual words across
 4. **Stitch**: Click "Create Video" to assemble your masterpiece.
 
 ### 💡 Sample Prompt
-> "Switch to precise mode. Create a video that says 'Gemini is the future of coding'."
+> "Create a video that says 'Gemini is the future of coding'."
 
 ---
 
